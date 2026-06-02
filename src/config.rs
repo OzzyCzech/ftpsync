@@ -1,0 +1,147 @@
+//! Validated configuration derived from CLI arguments.
+
+use crate::cli::{Args, SecureMode};
+use crate::error::{FtpSyncError, Result};
+use std::path::PathBuf;
+
+/// Verbosity level derived from -v / -q.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verbosity {
+    Quiet,
+    Normal,
+    Verbose,
+}
+
+/// Fully validated runtime configuration.
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub server: String,
+    pub username: String,
+    pub password: String,
+
+    pub port: u16,
+    pub secure: SecureMode,
+    pub insecure_tls: bool,
+    pub passive: bool,
+    pub timeout: u64,
+
+    pub local_dir: PathBuf,
+    /// Remote dir, normalized to a POSIX path without a trailing slash (root = "").
+    pub server_dir: String,
+    pub state_file: String,
+
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub ignore_file: String,
+    pub no_ignore_file: bool,
+
+    pub auto_init: bool,
+    pub no_delete: bool,
+    pub concurrency: usize,
+    pub dry_run: bool,
+    pub verbosity: Verbosity,
+}
+
+impl Config {
+    /// Build a validated configuration from parsed CLI args.
+    pub fn from_args(args: Args) -> Result<Self> {
+        if args.server.trim().is_empty() {
+            return Err(FtpSyncError::Config("server must not be empty".into()));
+        }
+        if args.username.trim().is_empty() {
+            return Err(FtpSyncError::Config("username must not be empty".into()));
+        }
+        if args.concurrency == 0 {
+            return Err(FtpSyncError::Config("concurrency must be >= 1".into()));
+        }
+        if args.verbose && args.quiet {
+            return Err(FtpSyncError::Config(
+                "--verbose and --quiet are mutually exclusive".into(),
+            ));
+        }
+
+        let local_dir = PathBuf::from(&args.local_dir);
+        if !local_dir.is_dir() {
+            return Err(FtpSyncError::Config(format!(
+                "local dir does not exist or is not a directory: {}",
+                local_dir.display()
+            )));
+        }
+
+        // --no-auto-init overrides --auto-init (which defaults to true).
+        let auto_init = !args.no_auto_init;
+
+        let verbosity = if args.quiet {
+            Verbosity::Quiet
+        } else if args.verbose {
+            Verbosity::Verbose
+        } else {
+            Verbosity::Normal
+        };
+
+        Ok(Config {
+            server: args.server,
+            username: args.username,
+            password: args.password,
+            port: args.port,
+            secure: args.secure,
+            insecure_tls: args.insecure_tls,
+            passive: args.passive,
+            timeout: args.timeout,
+            local_dir,
+            server_dir: normalize_remote_dir(&args.server_dir),
+            state_file: args.state_file,
+            include: args.include,
+            exclude: args.exclude,
+            ignore_file: args.ignore_file,
+            no_ignore_file: args.no_ignore_file,
+            auto_init,
+            no_delete: args.no_delete,
+            concurrency: args.concurrency,
+            dry_run: args.dry_run,
+            verbosity,
+        })
+    }
+
+    /// Absolute remote path for a path relative to `server_dir`.
+    pub fn remote_path(&self, rel: &str) -> String {
+        join_remote(&self.server_dir, rel)
+    }
+}
+
+/// Normalize a remote directory: strip trailing/duplicate slashes; root becomes "".
+pub fn normalize_remote_dir(dir: &str) -> String {
+    let trimmed = dir.trim();
+    let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
+    parts.join("/")
+}
+
+/// Join a normalized remote dir with a relative POSIX path.
+pub fn join_remote(dir: &str, rel: &str) -> String {
+    let rel = rel.trim_start_matches('/');
+    if dir.is_empty() {
+        format!("/{rel}")
+    } else {
+        format!("/{dir}/{rel}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_root() {
+        assert_eq!(normalize_remote_dir("/"), "");
+        assert_eq!(normalize_remote_dir(""), "");
+        assert_eq!(normalize_remote_dir("/www/"), "www");
+        assert_eq!(normalize_remote_dir("www//sub/"), "www/sub");
+    }
+
+    #[test]
+    fn join() {
+        assert_eq!(join_remote("", "a/b.txt"), "/a/b.txt");
+        assert_eq!(join_remote("www", "a/b.txt"), "/www/a/b.txt");
+        assert_eq!(join_remote("www", "/a/b.txt"), "/www/a/b.txt");
+    }
+}
