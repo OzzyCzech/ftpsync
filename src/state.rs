@@ -114,19 +114,12 @@ mod tests {
     #[test]
     fn round_trip() {
         let mut s = State::empty();
-        s.set(
-            "wp-content/themes/laguna/style.css",
-            "sha256:abc123".to_string(),
-            4096,
-        );
+        s.set("assets/css/style.css", "sha256:abc123".to_string(), 4096);
         let bytes = s.render_json().unwrap();
         let parsed = State::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.files.len(), 1);
-        let entry = parsed
-            .files
-            .get("wp-content/themes/laguna/style.css")
-            .unwrap();
+        let entry = parsed.files.get("assets/css/style.css").unwrap();
         assert_eq!(entry.hash, "sha256:abc123");
         assert_eq!(entry.size, 4096);
     }

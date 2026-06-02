@@ -45,7 +45,7 @@ pub async fn run(cfg: Config) -> Result<()> {
     let mut client = Client::connect_and_login(&cfg).await?;
 
     let state_path = cfg.remote_path(&cfg.state_file);
-    let mut state = match client.download(&state_path).await {
+    let state = match client.download(&state_path).await {
         Ok(bytes) => {
             log(verbosity, Verbosity::Verbose, "Loaded existing state file");
             State::from_bytes(&bytes)?
@@ -93,7 +93,7 @@ pub async fn run(cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    if plan.to_upload.is_empty() && plan.to_delete.is_empty() {
+    if plan.to_upload.is_empty() && plan.to_delete.is_empty() && cfg.purge.is_empty() {
         log(
             verbosity,
             Verbosity::Normal,
@@ -103,7 +103,52 @@ pub async fn run(cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    // 5. Execute deletes on the primary connection.
+    // 5. Take a ".running" lock so an interrupted/concurrent deploy is visible.
+    let lock_path = cfg.remote_path(&format!("{}.running", cfg.state_file));
+    if client.exists(&lock_path).await? {
+        log(
+            verbosity,
+            Verbosity::Normal,
+            &format!(
+                "warning: {lock_path} already exists — a previous deploy may have been \
+                 interrupted or another is running"
+            ),
+        );
+    }
+    client
+        .upload(&lock_path, b"ftpsync deploy in progress\n")
+        .await?;
+
+    // 6. Mutate the server, then always release the lock (even on error).
+    let result = deploy_mutations(
+        &mut client,
+        &cfg,
+        &plan,
+        &local_hashes,
+        state,
+        verbosity,
+        &state_path,
+    )
+    .await;
+    let _ = client.delete(&lock_path).await;
+    result?;
+
+    client.quit().await?;
+    Ok(())
+}
+
+/// Run the mutating phase: deletes, parallel uploads, purge, and state commit.
+#[allow(clippy::too_many_arguments)]
+async fn deploy_mutations(
+    client: &mut Client,
+    cfg: &Config,
+    plan: &Plan,
+    local_hashes: &HashMap<String, (String, u64)>,
+    mut state: State,
+    verbosity: Verbosity,
+    state_path: &str,
+) -> Result<()> {
+    // Deletes on the primary connection.
     for path in &plan.to_delete {
         let remote = cfg.remote_path(path);
         log(verbosity, Verbosity::Verbose, &format!("DELETE {path}"));
@@ -111,26 +156,31 @@ pub async fn run(cfg: Config) -> Result<()> {
         state.remove(path);
     }
 
-    // 6. Execute uploads (parallel via connection pool).
+    // Uploads (parallel via connection pool).
     let state = Arc::new(Mutex::new(state));
     execute_uploads(
-        &cfg,
+        cfg,
         &plan.to_upload,
-        &local_hashes,
+        local_hashes,
         Arc::clone(&state),
         verbosity,
     )
     .await?;
-
-    // 7. Commit state.
     let mut state = Arc::try_unwrap(state)
         .map_err(|_| FtpSyncError::Config("internal: state still shared".into()))?
         .into_inner();
-    let bytes = state.render_json()?;
-    client.upload(&state_path, &bytes).await?;
-    log(verbosity, Verbosity::Normal, "State committed");
 
-    client.quit().await?;
+    // Purge requested directories (e.g. caches) after the sync.
+    for dir in &cfg.purge {
+        let remote = cfg.remote_path(dir);
+        log(verbosity, Verbosity::Normal, &format!("Purging {dir}"));
+        client.purge(&remote).await?;
+    }
+
+    // Commit state.
+    let bytes = state.render_json()?;
+    client.upload(state_path, &bytes).await?;
+    log(verbosity, Verbosity::Normal, "State committed");
     Ok(())
 }
 

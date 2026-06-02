@@ -98,6 +98,19 @@ pub struct Args {
     #[arg(long, default_value_t = false)]
     pub no_delete: bool,
 
+    /// Remote directory to empty after deploying (repeatable), e.g. a cache dir.
+    /// The directory itself is kept; only its contents are removed.
+    #[arg(long)]
+    pub purge: Vec<String>,
+
+    /// chmod uploaded files to this octal mode, e.g. 0644 (best-effort, via SITE CHMOD).
+    #[arg(long, value_name = "OCTAL")]
+    pub file_perms: Option<String>,
+
+    /// chmod created directories to this octal mode, e.g. 0755 (best-effort, via SITE CHMOD).
+    #[arg(long, value_name = "OCTAL")]
+    pub dir_perms: Option<String>,
+
     /// Parallel uploads.
     #[arg(short = 'j', long, default_value_t = 4)]
     pub concurrency: usize,

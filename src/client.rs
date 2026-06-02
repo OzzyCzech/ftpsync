@@ -4,6 +4,7 @@ use crate::cli::SecureMode;
 use crate::config::Config;
 use crate::error::{is_not_found, FtpSyncError, Result};
 use futures::io::Cursor;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_rustls::rustls::{ClientConfig, RootCertStore};
@@ -15,6 +16,8 @@ use suppaftp::{AsyncRustlsConnector, AsyncRustlsFtpStream, ImplAsyncFtpStream};
 pub struct Client {
     inner: AsyncRustlsFtpStream,
     cfg: Config,
+    /// Remote dirs already created on this connection (skip redundant MKD/CHMOD).
+    created_dirs: HashSet<String>,
 }
 
 impl Client {
@@ -25,12 +28,17 @@ impl Client {
         Ok(Self {
             inner: stream,
             cfg: cfg.clone(),
+            created_dirs: HashSet::new(),
         })
     }
 
     /// Tear down the current connection and establish a fresh one.
+    ///
+    /// We deliberately do *not* send QUIT first: after an interrupted/short
+    /// transfer the server may still be waiting on the data channel, and QUIT
+    /// can then block indefinitely. Reassigning `inner` drops the old stream,
+    /// which just closes the socket.
     async fn reconnect(&mut self) -> Result<()> {
-        let _ = self.inner.quit().await;
         self.inner = Self::connect_stream(&self.cfg).await?;
         Ok(())
     }
@@ -72,6 +80,11 @@ impl Client {
 
         if cfg.passive {
             stream.set_mode(suppaftp::Mode::Passive);
+            // Ignore the IP the server advertises in its PASV reply and connect
+            // the data channel to the control host instead. Misconfigured or
+            // NATed servers (e.g. advertising 0.0.0.0 or a private address)
+            // otherwise yield failed/empty data transfers.
+            stream.set_passive_nat_workaround(true);
         } else {
             stream.set_mode(suppaftp::Mode::Active);
         }
@@ -131,6 +144,7 @@ impl Client {
         self.ensure_parent_dirs(path).await?;
         let mut reader = Cursor::new(data);
         self.inner.put_file(path, &mut reader).await?;
+        self.apply_file_perms(path).await;
         Ok(())
     }
 
@@ -145,7 +159,59 @@ impl Client {
         // Remove any pre-existing target, otherwise some servers refuse RNTO.
         let _ = self.inner.rm(path).await;
         self.inner.rename(tmp.as_str(), path).await?;
+        self.apply_file_perms(path).await;
         Ok(())
+    }
+
+    /// Best-effort `SITE CHMOD` for a file, if `--file-perms` was set.
+    async fn apply_file_perms(&mut self, path: &str) {
+        if let Some(mode) = self.cfg.file_perms {
+            self.chmod(path, mode).await;
+        }
+    }
+
+    /// Best-effort `SITE CHMOD <octal> <path>`. Failures are ignored, since many
+    /// servers don't support SITE CHMOD and a permission tweak shouldn't abort a deploy.
+    async fn chmod(&mut self, path: &str, mode: u32) {
+        let _ = self.inner.site(format!("CHMOD {mode:o} {path}")).await;
+    }
+
+    /// Returns true if a remote file exists (uses SIZE).
+    pub async fn exists(&mut self, path: &str) -> Result<bool> {
+        match self.inner.size(path).await {
+            Ok(_) => Ok(true),
+            Err(e) if is_not_found(&e) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Recursively delete the *contents* of `dir`, leaving `dir` itself in place.
+    pub fn purge<'a>(
+        &'a mut self,
+        dir: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            let entries = match self.inner.list(Some(dir)).await {
+                Ok(e) => e,
+                Err(e) if is_not_found(&e) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
+            for line in entries {
+                if let Some((name, is_dir)) = parse_list_line(&line) {
+                    if name == "." || name == ".." {
+                        continue;
+                    }
+                    let child = format!("{dir}/{name}");
+                    if is_dir {
+                        self.purge(&child).await?;
+                        let _ = self.inner.rmdir(&child).await;
+                    } else {
+                        let _ = self.inner.rm(&child).await;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Delete a remote file (550 not-found is treated as success).
@@ -198,6 +264,7 @@ impl Client {
     }
 
     /// Ensure all parent directories of `path` exist, creating them as needed.
+    /// Dirs created this connection are cached to skip redundant MKD/CHMOD.
     async fn ensure_parent_dirs(&mut self, path: &str) -> Result<()> {
         let trimmed = path.trim_start_matches('/');
         let mut components: Vec<&str> = trimmed.split('/').collect();
@@ -209,8 +276,15 @@ impl Client {
             }
             current.push('/');
             current.push_str(comp);
+            if self.created_dirs.contains(&current) {
+                continue;
+            }
             // mkdir may fail because the dir exists; ignore those errors.
             let _ = self.inner.mkdir(&current).await;
+            if let Some(mode) = self.cfg.dir_perms {
+                self.chmod(&current, mode).await;
+            }
+            self.created_dirs.insert(current.clone());
         }
         Ok(())
     }

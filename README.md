@@ -11,9 +11,6 @@ JSON state file on the server (`.ftpsync-state.json`) recording the hash of ever
 deployed file. A single static binary, nothing to install on the target — ideal
 for CI/CD pipelines deploying to cheap shared hosting that only offers FTP.
 
-Inspired by [`dg/ftp-deployment`](https://github.com/dg/ftp-deployment) and
-[`git-ftp`](https://github.com/git-ftp/git-ftp).
-
 ## Features
 
 - **Content-hash diffing** — SHA-256 of file contents, never mtime/size, so a
@@ -137,6 +134,9 @@ ftpsync [OPTIONS] --server <SERVER> --username <USERNAME> --password <PASSWORD>
 | `--auto-init` | Hash remote files on first run (default behavior) |
 | `--no-auto-init` | Treat the server as empty on first run (upload everything) |
 | `--no-delete` | Don't delete remote files that are missing locally |
+| `--purge <DIR>` | Empty a remote directory after deploying, e.g. a cache (repeatable; the directory itself is kept) |
+| `--file-perms <OCTAL>` | chmod uploaded files, e.g. `0644` (best-effort via `SITE CHMOD`) |
+| `--dir-perms <OCTAL>` | chmod created directories, e.g. `0755` (best-effort via `SITE CHMOD`) |
 | `-j, --concurrency <N>` | Parallel uploads (default `4`) |
 | `--dry-run` | Print actions without executing them |
 | `-v, --verbose` / `-q, --quiet` | More / less output |
@@ -147,14 +147,18 @@ ftpsync [OPTIONS] --server <SERVER> --username <USERNAME> --password <PASSWORD>
 # Static site: deploy only the build output
 ftpsync -s ftp.example.com -u deploy -r /www --include 'dist/**'
 
-# WordPress theme only
-ftpsync -s ftp.wp.cz -u deploy \
-        --local-dir wp-content/themes/laguna \
-        --server-dir /www/wp-content/themes/laguna
+# Deploy a single subdirectory to a matching remote path
+ftpsync -s ftp.example.com -u deploy \
+        --local-dir build/theme \
+        --server-dir /www/theme
 
-# Exclude server-managed directories
+# Exclude directories you don't manage
 ftpsync -s ftp.example.com -u deploy -r /www \
-        --exclude 'wp-admin/**' --exclude 'wp-includes/**'
+        --exclude 'vendor/**' --exclude 'uploads/**'
+
+# Empty a cache directory after deploying, and set file/dir permissions
+ftpsync -s ftp.example.com -u deploy -r /www \
+        --purge cache/views --file-perms 0644 --dir-perms 0755
 
 # Self-signed certificate (e.g. some Czech shared hosts)
 ftpsync -s ftp.example.com -u deploy -r /www --insecure-tls
@@ -270,7 +274,17 @@ walker/ignore filters, config validation, and `LIST`-line parsing.
   the `226` completion reply, which can otherwise yield a silently truncated
   transfer; `ftpsync` detects this and refuses to commit a corrupt state.
 - **Passwords** are never logged and read from `FTPSYNC_PASSWORD` when available.
+- **Passive NAT workaround** — in passive mode the data channel connects to the
+  control host instead of the IP the server advertises in its PASV reply, so
+  misconfigured/NATed servers (e.g. advertising `0.0.0.0`) still work.
+- **Deploy lock** — a `<state-file>.running` marker is written while a deploy
+  mutates the server and removed when it finishes, making interrupted or
+  concurrent deploys visible.
 
 ## License
 
 MIT
+
+---
+
+Inspired by [`dg/ftp-deployment`](https://github.com/dg/ftp-deployment) and [`git-ftp`](https://github.com/git-ftp/git-ftp).

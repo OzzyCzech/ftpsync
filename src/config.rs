@@ -37,6 +37,9 @@ pub struct Config {
 
     pub auto_init: bool,
     pub no_delete: bool,
+    pub purge: Vec<String>,
+    pub file_perms: Option<u32>,
+    pub dir_perms: Option<u32>,
     pub concurrency: usize,
     pub dry_run: bool,
     pub verbosity: Verbosity,
@@ -71,6 +74,9 @@ impl Config {
         // --no-auto-init overrides --auto-init (which defaults to true).
         let auto_init = !args.no_auto_init;
 
+        let file_perms = parse_octal(args.file_perms.as_deref(), "--file-perms")?;
+        let dir_perms = parse_octal(args.dir_perms.as_deref(), "--dir-perms")?;
+
         let verbosity = if args.quiet {
             Verbosity::Quiet
         } else if args.verbose {
@@ -97,6 +103,9 @@ impl Config {
             no_ignore_file: args.no_ignore_file,
             auto_init,
             no_delete: args.no_delete,
+            purge: args.purge,
+            file_perms,
+            dir_perms,
             concurrency: args.concurrency,
             dry_run: args.dry_run,
             verbosity,
@@ -107,6 +116,22 @@ impl Config {
     pub fn remote_path(&self, rel: &str) -> String {
         join_remote(&self.server_dir, rel)
     }
+}
+
+/// Parse an optional octal permission string like "0644" or "755" into its value.
+fn parse_octal(value: Option<&str>, flag: &str) -> Result<Option<u32>> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let digits = raw.trim().trim_start_matches("0o");
+    if digits.is_empty() || !digits.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+        return Err(FtpSyncError::Config(format!(
+            "{flag} must be an octal mode like 0644, got \"{raw}\""
+        )));
+    }
+    u32::from_str_radix(digits, 8)
+        .map(Some)
+        .map_err(|e| FtpSyncError::Config(format!("{flag} invalid: {e}")))
 }
 
 /// Normalize a remote directory: strip trailing/duplicate slashes; root becomes "".
@@ -136,6 +161,16 @@ mod tests {
         assert_eq!(normalize_remote_dir(""), "");
         assert_eq!(normalize_remote_dir("/www/"), "www");
         assert_eq!(normalize_remote_dir("www//sub/"), "www/sub");
+    }
+
+    #[test]
+    fn octal_parsing() {
+        assert_eq!(parse_octal(None, "--x").unwrap(), None);
+        assert_eq!(parse_octal(Some("0644"), "--x").unwrap(), Some(0o644));
+        assert_eq!(parse_octal(Some("755"), "--x").unwrap(), Some(0o755));
+        assert_eq!(parse_octal(Some("0o600"), "--x").unwrap(), Some(0o600));
+        assert!(parse_octal(Some("0888"), "--x").is_err()); // 8 is not octal
+        assert!(parse_octal(Some("abc"), "--x").is_err());
     }
 
     #[test]
