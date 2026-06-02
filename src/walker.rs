@@ -18,8 +18,8 @@ pub struct LocalFile {
 fn build_globset(patterns: &[String]) -> Result<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for p in patterns {
-        let glob = Glob::new(p)
-            .map_err(|e| FtpSyncError::Config(format!("invalid glob '{p}': {e}")))?;
+        let glob =
+            Glob::new(p).map_err(|e| FtpSyncError::Config(format!("invalid glob '{p}': {e}")))?;
         builder.add(glob);
     }
     builder
@@ -50,9 +50,7 @@ pub fn discover(cfg: &Config) -> Result<Vec<LocalFile>> {
 
     let mut out = Vec::new();
     for entry in WalkDir::new(&cfg.local_dir).follow_links(false) {
-        let entry = entry.map_err(|e| {
-            FtpSyncError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-        })?;
+        let entry = entry.map_err(|e| FtpSyncError::Io(std::io::Error::other(e.to_string())))?;
 
         let abs_path = entry.path();
         let rel = match abs_path.strip_prefix(&cfg.local_dir) {

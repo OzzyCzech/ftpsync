@@ -17,7 +17,9 @@ impl IgnoreRules {
         if path.exists() {
             // add() returns Option<Error>; surface it as an io error.
             if let Some(err) = builder.add(path) {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()).into());
+                return Err(
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()).into(),
+                );
             }
         }
         let inner = builder

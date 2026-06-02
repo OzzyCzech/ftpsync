@@ -15,7 +15,11 @@ pub enum SecureMode {
 
 /// ftpsync — hash-based deploy over FTPS without SSH.
 #[derive(Debug, Parser)]
-#[command(name = "ftpsync", version, about = "Hash-based deploy over FTPS without SSH")]
+#[command(
+    name = "ftpsync",
+    version,
+    about = "Hash-based deploy over FTPS without SSH"
+)]
 pub struct Args {
     // --- Required ---
     /// FTP server hostname.

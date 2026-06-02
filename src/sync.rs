@@ -23,7 +23,11 @@ pub async fn run(cfg: Config) -> Result<()> {
 
     // 1. Discover + hash local files.
     let local = walker::discover(&cfg)?;
-    log(verbosity, Verbosity::Verbose, &format!("Discovered {} local files", local.len()));
+    log(
+        verbosity,
+        Verbosity::Verbose,
+        &format!("Discovered {} local files", local.len()),
+    );
 
     let mut local_hashes: HashMap<String, (String, u64)> = HashMap::new();
     for f in &local {
@@ -33,7 +37,11 @@ pub async fn run(cfg: Config) -> Result<()> {
     }
 
     // 2. Connect + fetch (or initialize) state.
-    log(verbosity, Verbosity::Normal, &format!("Connecting to {}:{}", cfg.server, cfg.port));
+    log(
+        verbosity,
+        Verbosity::Normal,
+        &format!("Connecting to {}:{}", cfg.server, cfg.port),
+    );
     let mut client = Client::connect_and_login(&cfg).await?;
 
     let state_path = cfg.remote_path(&cfg.state_file);
@@ -43,11 +51,19 @@ pub async fn run(cfg: Config) -> Result<()> {
             State::from_bytes(&bytes)?
         }
         Err(FtpSyncError::NotFound(_)) if cfg.auto_init => {
-            log(verbosity, Verbosity::Normal, "No state file found — auto-initializing from server (this can be slow)");
+            log(
+                verbosity,
+                Verbosity::Normal,
+                "No state file found — auto-initializing from server (this can be slow)",
+            );
             auto_init(&mut client, &cfg, verbosity).await?
         }
         Err(FtpSyncError::NotFound(_)) => {
-            log(verbosity, Verbosity::Normal, "No state file found — treating server as empty");
+            log(
+                verbosity,
+                Verbosity::Normal,
+                "No state file found — treating server as empty",
+            );
             State::empty()
         }
         Err(e) => return Err(e),
@@ -58,7 +74,11 @@ pub async fn run(cfg: Config) -> Result<()> {
     log(
         verbosity,
         Verbosity::Normal,
-        &format!("{} to upload, {} to delete", plan.to_upload.len(), plan.to_delete.len()),
+        &format!(
+            "{} to upload, {} to delete",
+            plan.to_upload.len(),
+            plan.to_delete.len()
+        ),
     );
 
     // 4. Dry run: report and stop.
@@ -74,7 +94,11 @@ pub async fn run(cfg: Config) -> Result<()> {
     }
 
     if plan.to_upload.is_empty() && plan.to_delete.is_empty() {
-        log(verbosity, Verbosity::Normal, "Nothing to do — server is up to date");
+        log(
+            verbosity,
+            Verbosity::Normal,
+            "Nothing to do — server is up to date",
+        );
         client.quit().await?;
         return Ok(());
     }
@@ -89,13 +113,20 @@ pub async fn run(cfg: Config) -> Result<()> {
 
     // 6. Execute uploads (parallel via connection pool).
     let state = Arc::new(Mutex::new(state));
-    execute_uploads(&cfg, &plan.to_upload, &local_hashes, Arc::clone(&state), verbosity).await?;
+    execute_uploads(
+        &cfg,
+        &plan.to_upload,
+        &local_hashes,
+        Arc::clone(&state),
+        verbosity,
+    )
+    .await?;
 
     // 7. Commit state.
     let mut state = Arc::try_unwrap(state)
         .map_err(|_| FtpSyncError::Config("internal: state still shared".into()))?
         .into_inner();
-    let bytes = state.to_bytes()?;
+    let bytes = state.render_json()?;
     client.upload(&state_path, &bytes).await?;
     log(verbosity, Verbosity::Normal, "State committed");
 
@@ -134,20 +165,28 @@ fn diff(
 /// Auto-init: hash every remote file under server-dir to bootstrap the state.
 async fn auto_init(client: &mut Client, cfg: &Config, verbosity: Verbosity) -> Result<State> {
     let mut state = State::empty();
-    let remote_files = client.list_recursive(&format!("/{}", cfg.server_dir)).await?;
+    let remote_files = client
+        .list_recursive(&format!("/{}", cfg.server_dir))
+        .await?;
     for rel in remote_files {
         if rel == cfg.state_file {
             continue;
         }
         let remote = cfg.remote_path(&rel);
-        log(verbosity, Verbosity::Verbose, &format!("HASH (remote) {rel}"));
+        log(
+            verbosity,
+            Verbosity::Verbose,
+            &format!("HASH (remote) {rel}"),
+        );
         let bytes = client.download(&remote).await?;
         let hash = hasher::hash_bytes(&bytes);
         state.set(&rel, hash, bytes.len() as u64);
     }
     // Persist the freshly-built state so subsequent runs skip auto-init.
-    let bytes = state.to_bytes()?;
-    client.upload(&cfg.remote_path(&cfg.state_file), &bytes).await?;
+    let bytes = state.render_json()?;
+    client
+        .upload(&cfg.remote_path(&cfg.state_file), &bytes)
+        .await?;
     Ok(state)
 }
 
@@ -192,7 +231,11 @@ async fn execute_uploads(
                 .map_err(|e| FtpSyncError::Config(format!("join error: {e}")))??;
 
                 let remote = cfg.remote_path(&file.rel_path);
-                log(verbosity, Verbosity::Normal, &format!("UPLOAD {}", file.rel_path));
+                log(
+                    verbosity,
+                    Verbosity::Normal,
+                    &format!("UPLOAD {}", file.rel_path),
+                );
                 client.upload_atomic(&remote, &data).await?;
 
                 if let Some((hash, size)) = hashes.get(&file.rel_path) {

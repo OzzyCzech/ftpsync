@@ -68,7 +68,7 @@ impl State {
     }
 
     /// Serialize to pretty JSON bytes, refreshing the `updated`/`tool` fields.
-    pub fn to_bytes(&mut self) -> Result<Vec<u8>> {
+    pub fn render_json(&mut self) -> Result<Vec<u8>> {
         self.tool = tool_string();
         self.updated = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let mut bytes = serde_json::to_vec_pretty(self)?;
@@ -119,11 +119,14 @@ mod tests {
             "sha256:abc123".to_string(),
             4096,
         );
-        let bytes = s.to_bytes().unwrap();
+        let bytes = s.render_json().unwrap();
         let parsed = State::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.files.len(), 1);
-        let entry = parsed.files.get("wp-content/themes/laguna/style.css").unwrap();
+        let entry = parsed
+            .files
+            .get("wp-content/themes/laguna/style.css")
+            .unwrap();
         assert_eq!(entry.hash, "sha256:abc123");
         assert_eq!(entry.size, 4096);
     }

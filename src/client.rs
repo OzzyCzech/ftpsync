@@ -41,7 +41,10 @@ impl Client {
             Ok(res) => res,
             Err(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!("connection to {}:{} timed out after {}s", cfg.server, cfg.port, cfg.timeout),
+                format!(
+                    "connection to {}:{} timed out after {}s",
+                    cfg.server, cfg.port, cfg.timeout
+                ),
             )
             .into()),
         }
@@ -340,13 +343,19 @@ mod tests {
     #[test]
     fn parse_unix_dir() {
         let line = "drwxr-xr-x 2 user group 4096 Jun  2 15:00 wp-content";
-        assert_eq!(parse_list_line(line), Some(("wp-content".to_string(), true)));
+        assert_eq!(
+            parse_list_line(line),
+            Some(("wp-content".to_string(), true))
+        );
     }
 
     #[test]
     fn parse_unix_file() {
         let line = "-rw-r--r-- 1 user group 1234 Jun  2 15:00 index.html";
-        assert_eq!(parse_list_line(line), Some(("index.html".to_string(), false)));
+        assert_eq!(
+            parse_list_line(line),
+            Some(("index.html".to_string(), false))
+        );
     }
 
     #[test]
