@@ -1,0 +1,40 @@
+{
+  "name": "@ozzyczech/ftpsync",
+  "version": "0.1.0",
+  "description": "Hash-based deploy over FTPS without SSH — a single static binary, distributed as a native npm package.",
+  "bin": {
+    "ftpsync": "bin/ftpsync.js"
+  },
+  "files": [
+    "bin/ftpsync.js"
+  ],
+  "keywords": [
+    "ftp",
+    "ftps",
+    "deploy",
+    "deployment",
+    "sync",
+    "ci",
+    "upload",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OzzyCzech/ftpsync.git"
+  },
+  "homepage": "https://github.com/OzzyCzech/ftpsync#readme",
+  "bugs": {
+    "url": "https://github.com/OzzyCzech/ftpsync/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@ozzyczech/ftpsync-linux-x64": "0.1.0",
+    "@ozzyczech/ftpsync-linux-arm64": "0.1.0",
+    "@ozzyczech/ftpsync-darwin-x64": "0.1.0",
+    "@ozzyczech/ftpsync-darwin-arm64": "0.1.0",
+    "@ozzyczech/ftpsync-win32-x64": "0.1.0"
+  }
+}

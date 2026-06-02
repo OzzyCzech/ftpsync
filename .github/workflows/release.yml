@@ -55,3 +55,27 @@ jobs:
           checksum: sha256
           # cross is installed automatically for the musl / aarch64 targets.
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-npm:
+    needs: [create-release, upload-assets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # gh release download (built-in GITHUB_TOKEN)
+      id-token: write # npm Trusted Publishing (OIDC) + provenance — no secret needed
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      # Trusted Publishing (OIDC) requires npm >= 11.5.1.
+      - run: npm install -g npm@latest
+      - name: Assemble and publish npm packages
+        # No NODE_AUTH_TOKEN: npm authenticates via the OIDC id-token. Each
+        # package must have a Trusted Publisher configured on npmjs.com
+        # (repo OzzyCzech/ftpsync, workflow release.yml).
+        run: node npm/build.mjs "${{ github.ref_name }}"
+        env:
+          # Built-in, auto-provided token — only used by `gh release download`
+          # to fetch the binaries attached by the upload-assets job.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

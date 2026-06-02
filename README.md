@@ -28,6 +28,17 @@ for CI/CD pipelines deploying to cheap shared hosting that only offers FTP.
 
 ## Installation
 
+### npm
+
+The binary is also published to npm; only the prebuilt binary for your platform
+is downloaded (via per-platform `optionalDependencies`, no post-install step):
+
+```bash
+npm install -g @ozzyczech/ftpsync
+# or run on demand:
+npx @ozzyczech/ftpsync --help
+```
+
 ### Pre-built binaries
 
 Download the archive for your platform from the
@@ -227,7 +238,7 @@ deploy:
   runs-on: ubuntu-latest
   if: github.ref == 'refs/heads/main'
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - name: Install ftpsync
       run: |
         curl -sSL https://github.com/OzzyCzech/ftpsync/releases/latest/download/ftpsync-x86_64-unknown-linux-musl.tar.gz | tar xz
@@ -264,6 +275,23 @@ cargo build --release
 
 Tests cover hashing, state (de)serialization + path-traversal guards, the
 walker/ignore filters, config validation, and `LIST`-line parsing.
+
+### Releasing
+
+Pushing a `vX.Y.Z` tag triggers `.github/workflows/release.yml`, which:
+
+1. creates the GitHub release,
+2. builds and attaches binaries for all targets (`upload-assets`),
+3. assembles and publishes the npm packages (`publish-npm`): one per-platform
+   package (`@ozzyczech/ftpsync-<os>-<cpu>`) plus the `@ozzyczech/ftpsync`
+   launcher (`npm/build.mjs`).
+
+Publishing uses **npm Trusted Publishing (OIDC)** — no `NPM_TOKEN` secret. The
+job authenticates via its `id-token` and publishes with provenance. One-time
+setup on npmjs.com: for each package (`@ozzyczech/ftpsync` and the five
+`@ozzyczech/ftpsync-<os>-<cpu>`), add a Trusted Publisher pointing at the
+`OzzyCzech/ftpsync` repo and the `release.yml` workflow. Keep the version in
+`Cargo.toml` in sync with the tag.
 
 ## Notes & guarantees
 
