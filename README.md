@@ -293,6 +293,12 @@ setup on npmjs.com: for each package (`@ozzyczech/ftpsync` and the five
 `OzzyCzech/ftpsync` repo and the `release.yml` workflow. Keep the version in
 `Cargo.toml` in sync with the tag.
 
+`build.mjs` skips any package whose version is already on the registry, so
+re-running a release (or recovering from a partial failure) is safe. The very
+first publish of a brand-new package name can't use OIDC (a Trusted Publisher
+can only be added to an existing package) — bootstrap it once with a local
+`npm login` + `node npm/build.mjs <version>`, then configure the publishers.
+
 ## Notes & guarantees
 
 - **TLS** via rustls (`futures-rustls`) — no system OpenSSL dependency.

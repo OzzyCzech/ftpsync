@@ -53,7 +53,20 @@ rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
 const optionalDependencies = {};
-const packageDirs = [];
+const packages = []; // { dir, name }
+
+// True if this exact name@version is already on the registry (makes re-runs safe).
+function versionExists(name) {
+  try {
+    const out = execFileSync("npm", ["view", `${name}@${version}`, "version"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out === version;
+  } catch {
+    return false;
+  }
+}
 
 for (const t of TARGETS) {
   const exe = t.os === "win32" ? "ftpsync.exe" : "ftpsync";
@@ -98,7 +111,7 @@ for (const t of TARGETS) {
   );
 
   optionalDependencies[name] = version;
-  packageDirs.push(pkgDir);
+  packages.push({ dir: pkgDir, name });
   console.log(`assembled ${name}@${version}`);
 }
 
@@ -112,14 +125,21 @@ const mainPkg = JSON.parse(readFileSync(join(mainSrc, "package.json"), "utf8"));
 mainPkg.version = version;
 mainPkg.optionalDependencies = optionalDependencies;
 writeFileSync(join(mainDir, "package.json"), JSON.stringify(mainPkg, null, 2) + "\n");
-packageDirs.push(mainDir);
+packages.push({ dir: mainDir, name: mainPkg.name });
 
 // Provenance attestation is only available from a supported CI (Sigstore OIDC);
 // a local bootstrap publish must omit it.
 const provenance = process.env.GITHUB_ACTIONS === "true" ? ["--provenance"] : [];
 
 // Publish platform packages first so the main package's deps resolve immediately.
-for (const dir of packageDirs) {
+// Already-published versions are skipped so re-runs and partial failures are safe.
+let published = 0;
+for (const { dir, name } of packages) {
+  if (versionExists(name)) {
+    console.log(`skip ${name}@${version} (already published)`);
+    continue;
+  }
   run("npm", ["publish", "--access", "public", ...provenance], { cwd: dir });
+  published++;
 }
-console.log(`published ${packageDirs.length} packages at ${version}`);
+console.log(`published ${published} package(s), skipped ${packages.length - published}, at ${version}`);
