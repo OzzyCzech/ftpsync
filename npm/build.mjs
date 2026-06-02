@@ -114,8 +114,12 @@ mainPkg.optionalDependencies = optionalDependencies;
 writeFileSync(join(mainDir, "package.json"), JSON.stringify(mainPkg, null, 2) + "\n");
 packageDirs.push(mainDir);
 
+// Provenance attestation is only available from a supported CI (Sigstore OIDC);
+// a local bootstrap publish must omit it.
+const provenance = process.env.GITHUB_ACTIONS === "true" ? ["--provenance"] : [];
+
 // Publish platform packages first so the main package's deps resolve immediately.
 for (const dir of packageDirs) {
-  run("npm", ["publish", "--access", "public", "--provenance"], { cwd: dir });
+  run("npm", ["publish", "--access", "public", ...provenance], { cwd: dir });
 }
 console.log(`published ${packageDirs.length} packages at ${version}`);
