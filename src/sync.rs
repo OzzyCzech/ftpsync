@@ -103,7 +103,9 @@ pub async fn run(cfg: Config) -> Result<()> {
         return Ok(());
     }
 
-    // 5. Take a ".running" lock so an interrupted/concurrent deploy is visible.
+    // 5. Drop a ".running" marker. This is advisory only — it does not prevent
+    //    a concurrent deploy (the exists-check and upload are not atomic over
+    //    FTP); it just surfaces an interrupted or overlapping run.
     let lock_path = cfg.remote_path(&format!("{}.running", cfg.state_file));
     if client.exists(&lock_path).await? {
         log(
