@@ -86,11 +86,8 @@ pub struct Args {
     pub no_ignore_file: bool,
 
     // --- Behavior ---
-    /// Hash remote files on first run (this is the default behavior).
-    #[arg(long, default_value_t = false, conflicts_with = "no_auto_init")]
-    pub auto_init: bool,
-
-    /// Treat the server as empty on first run (upload everything).
+    /// Treat the server as empty on first run (upload everything) instead of
+    /// hashing every remote file to bootstrap state (the default).
     #[arg(long, default_value_t = false)]
     pub no_auto_init: bool,
 

@@ -142,8 +142,7 @@ ftpsync [OPTIONS] --server <SERVER> --username <USERNAME> --password <PASSWORD>
 
 | Option | Description |
 |---|---|
-| `--auto-init` | Hash remote files on first run (default behavior) |
-| `--no-auto-init` | Treat the server as empty on first run (upload everything) |
+| `--no-auto-init` | Treat the server as empty on first run (upload everything). By default ftpsync hashes every remote file on first run to bootstrap state |
 | `--no-delete` | Don't delete remote files that are missing locally |
 | `--purge <DIR>` | Empty a remote directory after deploying, e.g. a cache (repeatable; the directory itself is kept) |
 | `--file-perms <OCTAL>` | chmod uploaded files, e.g. `0644` (best-effort via `SITE CHMOD`) |
