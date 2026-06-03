@@ -314,10 +314,9 @@ can only be added to an existing package) — bootstrap it once with a local
   mutates the server and removed when it finishes, making interrupted or
   concurrent deploys visible.
 
+
+This whole project was inspired by [`dg/ftp-deployment`](https://github.com/dg/ftp-deployment) and [`git-ftp`](https://github.com/git-ftp/git-ftp), thank you for your work!
+
 ## License
 
-MIT
-
----
-
-Inspired by [`dg/ftp-deployment`](https://github.com/dg/ftp-deployment) and [`git-ftp`](https://github.com/git-ftp/git-ftp).
+[MIT](LICENSE)
