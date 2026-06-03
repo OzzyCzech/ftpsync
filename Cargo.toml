@@ -1,6 +1,6 @@
 [package]
 name = "ftpsync"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Hash-based deploy tool over FTPS without SSH"
 license = "MIT"
