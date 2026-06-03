@@ -1,6 +1,6 @@
 //! Local file discovery + filtering (exclude / include / .ftpignore).
 
-use crate::config::Config;
+use crate::config::{has_control_chars, normalize_remote_dir, Config};
 use crate::error::{FtpSyncError, Result};
 use crate::ignore::IgnoreRules;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -41,6 +41,15 @@ pub fn discover(cfg: &Config) -> Result<Vec<LocalFile>> {
     let exclude = build_globset(&cfg.exclude)?;
     let whitelist_mode = !cfg.include.is_empty();
 
+    // Directories that will be emptied after the sync; uploading into them
+    // would just be undone by the purge, so skip those files up front.
+    let purge_dirs: Vec<String> = cfg
+        .purge
+        .iter()
+        .map(|d| normalize_remote_dir(d))
+        .filter(|d| !d.is_empty())
+        .collect();
+
     let ignore_rules: Option<IgnoreRules> = if cfg.no_ignore_file {
         None
     } else {
@@ -75,8 +84,23 @@ pub fn discover(cfg: &Config) -> Result<Vec<LocalFile>> {
 
         let rel_posix = to_posix(&rel);
 
+        // Reject names that could inject FTP commands via the control channel.
+        if has_control_chars(&rel_posix) {
+            return Err(FtpSyncError::Config(format!(
+                "refusing to sync path with control characters: {rel_posix:?}"
+            )));
+        }
+
         // Never sync the state file itself if it lives in the tree.
         if rel_posix == cfg.state_file {
+            continue;
+        }
+
+        // Skip files that live inside a directory scheduled for purge.
+        if purge_dirs
+            .iter()
+            .any(|d| rel_posix == *d || rel_posix.starts_with(&format!("{d}/")))
+        {
             continue;
         }
 
