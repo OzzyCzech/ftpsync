@@ -344,6 +344,12 @@ fn parse_list_line(line: &str) -> Option<(String, bool)> {
             name.truncate(idx);
         }
     }
+    // Reject names a server should never send for a single entry: a path
+    // separator or control characters. Either would let a hostile/buggy server
+    // escape the target directory or inject FTP commands on a later operation.
+    if name.contains('/') || name.chars().any(|c| c.is_control()) {
+        return None;
+    }
     Some((name, first == 'd'))
 }
 
@@ -436,5 +442,11 @@ mod tests {
     fn parse_symlink() {
         let line = "lrwxrwxrwx 1 user group 7 Jun  2 15:00 link -> target";
         assert_eq!(parse_list_line(line), Some(("link".to_string(), false)));
+    }
+
+    #[test]
+    fn rejects_path_separator_in_name() {
+        let line = "-rw-r--r-- 1 user group 1 Jun  2 15:00 ../escape";
+        assert_eq!(parse_list_line(line), None);
     }
 }

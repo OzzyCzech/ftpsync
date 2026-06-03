@@ -123,7 +123,7 @@ fn parse_octal(value: Option<&str>, flag: &str) -> Result<Option<u32>> {
     let Some(raw) = value else {
         return Ok(None);
     };
-    let digits = raw.trim().trim_start_matches("0o");
+    let digits = raw.trim();
     if digits.is_empty() || !digits.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
         return Err(FtpSyncError::Config(format!(
             "{flag} must be an octal mode like 0644, got \"{raw}\""
@@ -139,6 +139,15 @@ pub fn normalize_remote_dir(dir: &str) -> String {
     let trimmed = dir.trim();
     let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
     parts.join("/")
+}
+
+/// Returns true if a path contains a control character (e.g. CR/LF).
+///
+/// Such characters in a path would be interpolated into FTP control-channel
+/// commands (RETR/STOR/MKD/SITE …), which are CRLF-terminated, allowing a
+/// crafted file name to inject a second command. We reject them outright.
+pub fn has_control_chars(s: &str) -> bool {
+    s.chars().any(|c| c.is_control())
 }
 
 /// Join a normalized remote dir with a relative POSIX path.
@@ -168,9 +177,17 @@ mod tests {
         assert_eq!(parse_octal(None, "--x").unwrap(), None);
         assert_eq!(parse_octal(Some("0644"), "--x").unwrap(), Some(0o644));
         assert_eq!(parse_octal(Some("755"), "--x").unwrap(), Some(0o755));
-        assert_eq!(parse_octal(Some("0o600"), "--x").unwrap(), Some(0o600));
         assert!(parse_octal(Some("0888"), "--x").is_err()); // 8 is not octal
+        assert!(parse_octal(Some("0o600"), "--x").is_err()); // not plain octal digits
         assert!(parse_octal(Some("abc"), "--x").is_err());
+    }
+
+    #[test]
+    fn control_chars() {
+        assert!(has_control_chars("foo\nDELE bar"));
+        assert!(has_control_chars("foo\r\nbar"));
+        assert!(has_control_chars("a\tb"));
+        assert!(!has_control_chars("a/b/c.txt"));
     }
 
     #[test]
