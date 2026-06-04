@@ -24,7 +24,8 @@ for CI/CD pipelines deploying to cheap shared hosting that only offers FTP.
 - **FTPS by default** — explicit AUTH TLS via [rustls](https://github.com/rustls/rustls)
   (no system OpenSSL); `--insecure-tls` for self-signed certs.
 - **Safe state handling** — size cap (100 MB), schema + version checks, and
-  path-traversal rejection.
+  path-traversal rejection. Paths containing control characters (which could
+  inject commands on the FTP control channel) are refused outright.
 
 ## Installation
 
@@ -144,7 +145,7 @@ ftpsync [OPTIONS] --server <SERVER> --username <USERNAME> --password <PASSWORD>
 |---|---|
 | `--no-auto-init` | Treat the server as empty on first run (upload everything). By default ftpsync hashes every remote file on first run to bootstrap state |
 | `--no-delete` | Don't delete remote files that are missing locally |
-| `--purge <DIR>` | Empty a remote directory after deploying, e.g. a cache (repeatable; the directory itself is kept) |
+| `--purge <DIR>` | Empty a remote directory after deploying, e.g. a cache (repeatable; the directory itself is kept). Local files inside a purge dir are skipped, not uploaded |
 | `--file-perms <OCTAL>` | chmod uploaded files, e.g. `0644` (best-effort via `SITE CHMOD`) |
 | `--dir-perms <OCTAL>` | chmod created directories, e.g. `0755` (best-effort via `SITE CHMOD`) |
 | `-j, --concurrency <N>` | Parallel uploads (default `4`) |
@@ -200,7 +201,7 @@ state:
 ```json
 {
   "version": 1,
-  "tool": "ftpsync 0.1.0",
+  "tool": "ftpsync 0.1.1",
   "updated": "2026-06-02T15:00:00Z",
   "files": {
     "index.html": {
@@ -310,10 +311,10 @@ can only be added to an existing package) — bootstrap it once with a local
 - **Passive NAT workaround** — in passive mode the data channel connects to the
   control host instead of the IP the server advertises in its PASV reply, so
   misconfigured/NATed servers (e.g. advertising `0.0.0.0`) still work.
-- **Deploy lock** — a `<state-file>.running` marker is written while a deploy
-  mutates the server and removed when it finishes, making interrupted or
-  concurrent deploys visible.
-
+- **Deploy marker** — a `<state-file>.running` marker is written while a deploy
+  mutates the server and removed when it finishes, making an interrupted or
+  overlapping run visible. It is advisory only: it surfaces concurrent deploys
+  but does not prevent them (the check and write are not atomic over FTP).
 
 This whole project was inspired by [`dg/ftp-deployment`](https://github.com/dg/ftp-deployment) and [`git-ftp`](https://github.com/git-ftp/git-ftp), thank you for your work!
 
