@@ -1,10 +1,11 @@
+# ftpsync
+
 [![NPM Downloads](https://img.shields.io/npm/dm/@ozzyczech/ftpsync?style=for-the-badge)](https://www.npmjs.com/package/@ozzyczech/ftpsync)
 [![NPM Version](https://img.shields.io/npm/v/@ozzyczech/ftpsync?style=for-the-badge)](https://www.npmjs.com/package/@ozzyczech/ftpsync)
 [![NPM License](https://img.shields.io/npm/l/@ozzyczech/ftpsync?style=for-the-badge)](https://github.com/OzzyCzech/ftpsync/blob/main/LICENSE)
 [![Last Commit](https://img.shields.io/github/last-commit/OzzyCzech/ftpsync?style=for-the-badge)](https://github.com/OzzyCzech/ftpsync/commits/main)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/OzzyCzech/ftpsync/ci.yml?style=for-the-badge)](https://github.com/OzzyCzech/ftpsync/actions)
 
-# ftpsync
 
 **Hash-based deploy over FTPS — no SSH, no mtime/size guessing.**
 
