@@ -9,6 +9,7 @@ mod config;
 mod error;
 mod hasher;
 mod ignore;
+mod log;
 mod state;
 mod sync;
 mod walker;
@@ -17,6 +18,7 @@ mod walker;
 async fn main() -> Result<()> {
     let args = cli::Args::parse();
     let cfg = config::Config::from_args(args)?;
+    log::set_verbosity(cfg.verbosity);
     sync::run(cfg).await?;
     Ok(())
 }
