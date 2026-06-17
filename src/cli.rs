@@ -3,7 +3,8 @@
 use clap::{Parser, ValueEnum};
 
 /// Secure connection mode for the FTP control/data channels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SecureMode {
     /// Plain FTP, no TLS.
     None,
@@ -21,18 +22,22 @@ pub enum SecureMode {
     about = "Hash-based deploy over FTPS without SSH"
 )]
 pub struct Args {
-    // --- Required ---
+    /// Path to the config file (default: .ftpsync.json in the current directory).
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<String>,
+
+    // --- Required (here or in the config file) ---
     /// FTP server hostname.
     #[arg(short = 's', long)]
-    pub server: String,
+    pub server: Option<String>,
 
     /// FTP username.
     #[arg(short = 'u', long)]
-    pub username: String,
+    pub username: Option<String>,
 
     /// FTP password (prefer the FTPSYNC_PASSWORD env var for CI).
     #[arg(short = 'p', long, env = "FTPSYNC_PASSWORD", hide_env_values = true)]
-    pub password: String,
+    pub password: Option<String>,
 
     // --- Connection ---
     /// FTP port.

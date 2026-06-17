@@ -26,7 +26,10 @@ idempotent: an interrupted run re-uploads only what didn't make it.
 
 - `main.rs` — entry point: parse args → build config → `sync::run`.
 - `cli.rs` — clap argument definitions.
-- `config.rs` — validated `Config` from args; remote-path helpers; `has_control_chars`.
+- `config.rs` — validated `Config` via `Config::build(args, file, &matches)`;
+  remote-path helpers; `has_control_chars`.
+- `config_file.rs` — optional `.ftpsync.json` (`FileConfig`, serde, kebab-case,
+  `deny_unknown_fields`); `load(path, explicit)`.
 - `walker.rs` — local file discovery + filtering.
 - `ignore.rs` — `.ftpignore` parsing (gitignore semantics via the `ignore` crate).
 - `hasher.rs` — streaming SHA-256 (`sha256:<hex>`).
@@ -47,6 +50,12 @@ idempotent: an interrupted run re-uploads only what didn't make it.
   deploys but does not prevent concurrency (exists-check + upload aren't atomic).
 - State `BTreeMap` keeps output deterministic. The on-disk format is shared with a
   parallel Bun implementation; keep `version` / shape compatible.
+- Config precedence is **default → `.ftpsync.json` → CLI**: `Config::build` reads
+  clap's `ValueSource` (via `cli_set`) so an explicit flag overrides the file but
+  a default does not; list flags (`include`/`exclude`/`purge`) merge (CLI appended
+  last). The password is never read from the file (no `password` key) — it stays
+  in `-p` / `FTPSYNC_PASSWORD`. The config file is excluded from upload like the
+  state file (`rel_posix == cfg.config_file`).
 
 ## Build, test, lint
 
