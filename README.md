@@ -101,6 +101,9 @@ Always **preview first** with `--dry-run`:
 ftpsync -s ftp.example.com -u deploy -r /www --dry-run -v
 ```
 
+For repeated deploys, commit the non-secret options to a
+[`.ftpsync.json`](#configuration-file) so a run is just `FTPSYNC_PASSWORD=… ftpsync`.
+
 ## Usage
 
 ```
@@ -132,6 +135,7 @@ ftpsync [OPTIONS] --server <SERVER> --username <USERNAME> --password <PASSWORD>
 | `-l, --local-dir <DIR>` | `.` | Local source directory |
 | `-r, --server-dir <DIR>` | `/` | Remote target directory |
 | `--state-file <NAME>` | `.ftpsync-state.json` | State file name on the server |
+| `--config <PATH>` | `.ftpsync.json` | [Config file](#configuration-file) to pre-fill options |
 
 ### Filters
 
@@ -180,6 +184,56 @@ ftpsync -s ftp.example.com -u deploy -r /www --insecure-tls
 # Faster deploy with more parallel connections
 ftpsync -s ftp.example.com -u deploy -r /www -j 8
 ```
+
+## Configuration file
+
+For repeated deploys you can commit a project's non-secret settings to a
+`.ftpsync.json` instead of retyping flags every run. It is **optional**: if the
+default `.ftpsync.json` is absent it is silently ignored, and you can point
+elsewhere with `--config <PATH>`. The file is looked up in the current working
+directory (no upward tree search), and it is never uploaded to the server.
+
+Keys map 1:1 to the CLI flags (kebab-case), all optional:
+
+```json
+{
+  "server": "ftp.example.com",
+  "port": 21,
+  "username": "deploy",
+  "secure": "explicit",
+  "passive": true,
+  "timeout": 30,
+  "local-dir": ".",
+  "server-dir": "/www",
+  "state-file": ".ftpsync-state.json",
+  "include": ["dist/**"],
+  "exclude": ["vendor/**", "uploads/**"],
+  "ignore-file": ".ftpignore",
+  "no-delete": false,
+  "purge": ["cache/views"],
+  "file-perms": "0644",
+  "dir-perms": "0755",
+  "concurrency": 8
+}
+```
+
+With that committed, a deploy is just:
+
+```bash
+FTPSYNC_PASSWORD='s3cret' ftpsync
+```
+
+Rules:
+
+- **No password in the file.** There is no `password` key; it must come from
+  `-p` / `FTPSYNC_PASSWORD`, so it never lands in git. (Same for the per-run
+  toggles `--dry-run` / `--verbose` / `--quiet`.)
+- **Precedence is default → file → CLI.** A CLI flag always overrides the file;
+  the file overrides the built-in default.
+- **List flags merge.** `include` / `exclude` / `purge` from the file and the
+  CLI are combined (the CLI's entries appended last), not replaced.
+- **Unknown keys are errors**, so a typo like `"serverr"` fails loudly instead
+  of being silently ignored.
 
 ## `.ftpignore`
 

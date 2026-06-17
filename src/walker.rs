@@ -91,8 +91,8 @@ pub fn discover(cfg: &Config) -> Result<Vec<LocalFile>> {
             )));
         }
 
-        // Never sync the state file itself if it lives in the tree.
-        if rel_posix == cfg.state_file {
+        // Never sync the state file or the config file if they live in the tree.
+        if rel_posix == cfg.state_file || rel_posix == cfg.config_file {
             continue;
         }
 
@@ -137,5 +137,47 @@ mod tests {
         assert!(gs.is_match("wp-admin/index.php"));
         assert!(gs.is_match("foo.log"));
         assert!(!gs.is_match("index.php"));
+    }
+
+    /// Build a default Config rooted at `dir` (credentials are dummies).
+    fn cfg_for(dir: &Path) -> Config {
+        use crate::cli::Args;
+        use clap::{CommandFactory, FromArgMatches};
+        let argv = vec![
+            "ftpsync",
+            "-s",
+            "h",
+            "-u",
+            "u",
+            "-p",
+            "pw",
+            "-l",
+            dir.to_str().unwrap(),
+        ];
+        let matches = Args::command().get_matches_from(argv);
+        let args = Args::from_arg_matches(&matches).unwrap();
+        Config::build(args, crate::config_file::FileConfig::default(), &matches).unwrap()
+    }
+
+    #[test]
+    fn skips_state_and_config_files() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("ftpsync-walk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("index.html"), b"x").unwrap();
+        fs::write(dir.join(".ftpsync-state.json"), b"{}").unwrap();
+        fs::write(dir.join(".ftpsync.json"), b"{}").unwrap();
+
+        let cfg = cfg_for(&dir);
+        let names: Vec<String> = discover(&cfg)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+        let _ = fs::remove_dir_all(&dir);
+
+        // Neither the state file nor the config file is uploaded.
+        assert_eq!(names, vec!["index.html".to_string()]);
     }
 }

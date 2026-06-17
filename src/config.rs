@@ -1,8 +1,14 @@
 //! Validated configuration derived from CLI arguments.
 
 use crate::cli::{Args, SecureMode};
+use crate::config_file::FileConfig;
 use crate::error::{FtpSyncError, Result};
+use clap::parser::ValueSource;
+use clap::ArgMatches;
 use std::path::PathBuf;
+
+/// Default config file name, looked up in the current directory.
+pub const DEFAULT_CONFIG_FILE: &str = ".ftpsync.json";
 
 /// Verbosity level derived from -v / -q.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,18 +49,53 @@ pub struct Config {
     pub concurrency: usize,
     pub dry_run: bool,
     pub verbosity: Verbosity,
+
+    /// Config file path, excluded from upload the same way `state_file` is.
+    pub config_file: String,
+}
+
+/// True if the user explicitly supplied the arg (on the CLI or via env),
+/// as opposed to clap filling in a default or leaving it unset. This is how
+/// we let a CLI flag override the config file while a default does not.
+fn cli_set(matches: &ArgMatches, id: &str) -> bool {
+    matches!(
+        matches.value_source(id),
+        Some(ValueSource::CommandLine) | Some(ValueSource::EnvVariable)
+    )
 }
 
 impl Config {
-    /// Build a validated configuration from parsed CLI args.
-    pub fn from_args(args: Args) -> Result<Self> {
-        if args.server.trim().is_empty() {
-            return Err(FtpSyncError::Config("server must not be empty".into()));
+    /// Build a validated configuration from CLI args, the (already loaded)
+    /// config file, and clap's match metadata.
+    ///
+    /// Precedence is default -> file -> CLI: a scalar takes the file value
+    /// unless the flag was set explicitly; list flags (include/exclude/purge)
+    /// merge the file's entries with the CLI's, CLI appended last.
+    pub fn build(args: Args, file: FileConfig, matches: &ArgMatches) -> Result<Self> {
+        // Scalar with a clap default: file wins over the default, CLI wins over both.
+        macro_rules! pick {
+            ($id:literal, $cli:expr, $file:expr) => {
+                if cli_set(matches, $id) {
+                    $cli
+                } else {
+                    $file.unwrap_or($cli)
+                }
+            };
         }
-        if args.username.trim().is_empty() {
-            return Err(FtpSyncError::Config("username must not be empty".into()));
-        }
-        if args.concurrency == 0 {
+
+        // server/username have no clap default, so an unset CLI value is `None`
+        // and falls back to the file. The password is intentionally absent from
+        // the file (it must not land in git); it comes from `-p` / the env only.
+        let server = require(args.server.or(file.server), "server", "--server")?;
+        let username = require(args.username.or(file.username), "username", "--username")?;
+        let password = require(
+            args.password,
+            "password",
+            "--password / the FTPSYNC_PASSWORD env var",
+        )?;
+
+        let concurrency = pick!("concurrency", args.concurrency, file.concurrency);
+        if concurrency == 0 {
             return Err(FtpSyncError::Config("concurrency must be >= 1".into()));
         }
         if args.verbose && args.quiet {
@@ -63,7 +104,7 @@ impl Config {
             ));
         }
 
-        let local_dir = PathBuf::from(&args.local_dir);
+        let local_dir = PathBuf::from(pick!("local_dir", args.local_dir, file.local_dir));
         if !local_dir.is_dir() {
             return Err(FtpSyncError::Config(format!(
                 "local dir does not exist or is not a directory: {}",
@@ -72,10 +113,18 @@ impl Config {
         }
 
         // --no-auto-init overrides --auto-init (which defaults to true).
-        let auto_init = !args.no_auto_init;
+        let auto_init = !pick!("no_auto_init", args.no_auto_init, file.no_auto_init);
 
-        let file_perms = parse_octal(args.file_perms.as_deref(), "--file-perms")?;
-        let dir_perms = parse_octal(args.dir_perms.as_deref(), "--dir-perms")?;
+        // These have no clap default either, so `.or` falls back to the file.
+        let file_perms_raw = args.file_perms.or(file.file_perms);
+        let dir_perms_raw = args.dir_perms.or(file.dir_perms);
+        let file_perms = parse_octal(file_perms_raw.as_deref(), "--file-perms")?;
+        let dir_perms = parse_octal(dir_perms_raw.as_deref(), "--dir-perms")?;
+
+        // List flags merge: file entries first, CLI entries appended last.
+        let include = merge_vec(file.include, args.include);
+        let exclude = merge_vec(file.exclude, args.exclude);
+        let purge = merge_vec(file.purge, args.purge);
 
         let verbosity = if args.quiet {
             Verbosity::Quiet
@@ -85,30 +134,39 @@ impl Config {
             Verbosity::Normal
         };
 
+        let config_file = args
+            .config
+            .unwrap_or_else(|| DEFAULT_CONFIG_FILE.to_string());
+
         Ok(Config {
-            server: args.server,
-            username: args.username,
-            password: args.password,
-            port: args.port,
-            secure: args.secure,
-            insecure_tls: args.insecure_tls,
-            passive: args.passive,
-            timeout: args.timeout,
+            server,
+            username,
+            password,
+            port: pick!("port", args.port, file.port),
+            secure: pick!("secure", args.secure, file.secure),
+            insecure_tls: pick!("insecure_tls", args.insecure_tls, file.insecure_tls),
+            passive: pick!("passive", args.passive, file.passive),
+            timeout: pick!("timeout", args.timeout, file.timeout),
             local_dir,
-            server_dir: normalize_remote_dir(&args.server_dir),
-            state_file: args.state_file,
-            include: args.include,
-            exclude: args.exclude,
-            ignore_file: args.ignore_file,
-            no_ignore_file: args.no_ignore_file,
+            server_dir: normalize_remote_dir(&pick!(
+                "server_dir",
+                args.server_dir,
+                file.server_dir
+            )),
+            state_file: pick!("state_file", args.state_file, file.state_file),
+            include,
+            exclude,
+            ignore_file: pick!("ignore_file", args.ignore_file, file.ignore_file),
+            no_ignore_file: pick!("no_ignore_file", args.no_ignore_file, file.no_ignore_file),
             auto_init,
-            no_delete: args.no_delete,
-            purge: args.purge,
+            no_delete: pick!("no_delete", args.no_delete, file.no_delete),
+            purge,
             file_perms,
             dir_perms,
-            concurrency: args.concurrency,
+            concurrency,
             dry_run: args.dry_run,
             verbosity,
+            config_file,
         })
     }
 
@@ -116,6 +174,24 @@ impl Config {
     pub fn remote_path(&self, rel: &str) -> String {
         join_remote(&self.server_dir, rel)
     }
+}
+
+/// Unwrap a required credential that may come from the CLI or the config file,
+/// rejecting an absent or blank value with a hint at where to set it.
+fn require(value: Option<String>, name: &str, where_: &str) -> Result<String> {
+    match value {
+        Some(v) if !v.trim().is_empty() => Ok(v),
+        _ => Err(FtpSyncError::Config(format!(
+            "{name} is required: set {where_} or put \"{name}\" in {DEFAULT_CONFIG_FILE}"
+        ))),
+    }
+}
+
+/// Merge a list flag: the config file's entries first, then the CLI's appended
+/// last (so a CLI value wins on conflict and is applied later).
+fn merge_vec(mut file: Vec<String>, cli: Vec<String>) -> Vec<String> {
+    file.extend(cli);
+    file
 }
 
 /// Parse an optional octal permission string like "0644" or "755" into its value.
@@ -163,6 +239,65 @@ pub fn join_remote(dir: &str, rel: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, FromArgMatches};
+
+    /// Build a Config from a CLI argv (without the program name) and a file config.
+    fn build_from(argv: &[&str], file: FileConfig) -> Result<Config> {
+        let mut full = vec!["ftpsync"];
+        full.extend_from_slice(argv);
+        let matches = Args::command().get_matches_from(full);
+        let args = Args::from_arg_matches(&matches).unwrap();
+        Config::build(args, file, &matches)
+    }
+
+    #[test]
+    fn cli_overrides_file_scalar() {
+        let file = FileConfig {
+            server: Some("file-host".into()),
+            username: Some("file-user".into()),
+            server_dir: Some("/www".into()),
+            ..Default::default()
+        };
+        // server-dir given on the CLI must win over the file's "/www".
+        let cfg = build_from(&["-p", "pw", "--server-dir", "/public"], file).unwrap();
+        assert_eq!(cfg.server, "file-host"); // from file (no CLI value)
+        assert_eq!(cfg.server_dir, "public"); // CLI wins, normalized
+    }
+
+    #[test]
+    fn file_fills_when_cli_is_default() {
+        let file = FileConfig {
+            server: Some("file-host".into()),
+            username: Some("file-user".into()),
+            server_dir: Some("/www".into()),
+            concurrency: Some(8),
+            secure: Some(SecureMode::Implicit),
+            ..Default::default()
+        };
+        let cfg = build_from(&["-p", "pw"], file).unwrap();
+        assert_eq!(cfg.server_dir, "www");
+        assert_eq!(cfg.concurrency, 8);
+        assert_eq!(cfg.secure, SecureMode::Implicit);
+    }
+
+    #[test]
+    fn vec_flags_merge_with_cli_last() {
+        let file = FileConfig {
+            server: Some("h".into()),
+            username: Some("u".into()),
+            exclude: vec!["vendor/**".into()],
+            ..Default::default()
+        };
+        let cfg = build_from(&["-p", "pw", "--exclude", "uploads/**"], file).unwrap();
+        assert_eq!(cfg.exclude, vec!["vendor/**", "uploads/**"]); // file first, CLI last
+    }
+
+    #[test]
+    fn missing_required_field_errors() {
+        // No server anywhere -> a clear error after the merge.
+        let err = build_from(&["-u", "u", "-p", "pw"], FileConfig::default()).unwrap_err();
+        assert!(matches!(err, FtpSyncError::Config(_)));
+    }
 
     #[test]
     fn normalize_root() {
