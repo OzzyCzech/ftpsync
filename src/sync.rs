@@ -4,6 +4,7 @@ use crate::client::Client;
 use crate::config::{Config, Verbosity};
 use crate::error::{FtpSyncError, Result};
 use crate::hasher;
+use crate::log::log;
 use crate::state::State;
 use crate::walker::{self, LocalFile};
 use std::collections::HashMap;
@@ -19,12 +20,9 @@ struct Plan {
 
 /// Top-level entry point invoked from main.
 pub async fn run(cfg: Config) -> Result<()> {
-    let verbosity = cfg.verbosity;
-
     // 1. Discover + hash local files.
     let local = walker::discover(&cfg)?;
     log(
-        verbosity,
         Verbosity::Verbose,
         &format!("Discovered {} local files", local.len()),
     );
@@ -38,7 +36,6 @@ pub async fn run(cfg: Config) -> Result<()> {
 
     // 2. Connect + fetch (or initialize) state.
     log(
-        verbosity,
         Verbosity::Normal,
         &format!("Connecting to {}:{}", cfg.server, cfg.port),
     );
@@ -47,20 +44,18 @@ pub async fn run(cfg: Config) -> Result<()> {
     let state_path = cfg.remote_path(&cfg.state_file);
     let state = match client.download(&state_path).await {
         Ok(bytes) => {
-            log(verbosity, Verbosity::Verbose, "Loaded existing state file");
+            log(Verbosity::Verbose, "Loaded existing state file");
             State::from_bytes(&bytes)?
         }
         Err(FtpSyncError::NotFound(_)) if cfg.auto_init => {
             log(
-                verbosity,
                 Verbosity::Normal,
                 "No state file found — auto-initializing from server (this can be slow)",
             );
-            auto_init(&mut client, &cfg, verbosity).await?
+            auto_init(&mut client, &cfg).await?
         }
         Err(FtpSyncError::NotFound(_)) => {
             log(
-                verbosity,
                 Verbosity::Normal,
                 "No state file found — treating server as empty",
             );
@@ -72,7 +67,6 @@ pub async fn run(cfg: Config) -> Result<()> {
     // 3. Diff.
     let plan = diff(&local, &local_hashes, &state, cfg.no_delete);
     log(
-        verbosity,
         Verbosity::Normal,
         &format!(
             "{} to upload, {} to delete",
@@ -94,11 +88,7 @@ pub async fn run(cfg: Config) -> Result<()> {
     }
 
     if plan.to_upload.is_empty() && plan.to_delete.is_empty() && cfg.purge.is_empty() {
-        log(
-            verbosity,
-            Verbosity::Normal,
-            "Nothing to do — server is up to date",
-        );
+        log(Verbosity::Normal, "Nothing to do — server is up to date");
         client.quit().await?;
         return Ok(());
     }
@@ -109,7 +99,6 @@ pub async fn run(cfg: Config) -> Result<()> {
     let lock_path = cfg.remote_path(&format!("{}.running", cfg.state_file));
     if client.exists(&lock_path).await? {
         log(
-            verbosity,
             Verbosity::Normal,
             &format!(
                 "warning: {lock_path} already exists — a previous deploy may have been \
@@ -122,16 +111,8 @@ pub async fn run(cfg: Config) -> Result<()> {
         .await?;
 
     // 6. Mutate the server, then always release the lock (even on error).
-    let result = deploy_mutations(
-        &mut client,
-        &cfg,
-        &plan,
-        &local_hashes,
-        state,
-        verbosity,
-        &state_path,
-    )
-    .await;
+    let result =
+        deploy_mutations(&mut client, &cfg, &plan, &local_hashes, state, &state_path).await;
     let _ = client.delete(&lock_path).await;
     result?;
 
@@ -140,34 +121,25 @@ pub async fn run(cfg: Config) -> Result<()> {
 }
 
 /// Run the mutating phase: deletes, parallel uploads, purge, and state commit.
-#[allow(clippy::too_many_arguments)]
 async fn deploy_mutations(
     client: &mut Client,
     cfg: &Config,
     plan: &Plan,
     local_hashes: &HashMap<String, (String, u64)>,
     mut state: State,
-    verbosity: Verbosity,
     state_path: &str,
 ) -> Result<()> {
     // Deletes on the primary connection.
     for path in &plan.to_delete {
         let remote = cfg.remote_path(path);
-        log(verbosity, Verbosity::Verbose, &format!("DELETE {path}"));
+        log(Verbosity::Verbose, &format!("DELETE {path}"));
         client.delete(&remote).await?;
         state.remove(path);
     }
 
     // Uploads (parallel via connection pool).
     let state = Arc::new(Mutex::new(state));
-    execute_uploads(
-        cfg,
-        &plan.to_upload,
-        local_hashes,
-        Arc::clone(&state),
-        verbosity,
-    )
-    .await?;
+    execute_uploads(cfg, &plan.to_upload, local_hashes, Arc::clone(&state)).await?;
     let mut state = Arc::try_unwrap(state)
         .map_err(|_| FtpSyncError::Config("internal: state still shared".into()))?
         .into_inner();
@@ -175,14 +147,14 @@ async fn deploy_mutations(
     // Purge requested directories (e.g. caches) after the sync.
     for dir in &cfg.purge {
         let remote = cfg.remote_path(dir);
-        log(verbosity, Verbosity::Normal, &format!("Purging {dir}"));
+        log(Verbosity::Normal, &format!("Purging {dir}"));
         client.purge(&remote).await?;
     }
 
     // Commit state.
     let bytes = state.render_json()?;
     client.upload(state_path, &bytes).await?;
-    log(verbosity, Verbosity::Normal, "State committed");
+    log(Verbosity::Normal, "State committed");
     Ok(())
 }
 
@@ -215,7 +187,7 @@ fn diff(
 }
 
 /// Auto-init: hash every remote file under server-dir to bootstrap the state.
-async fn auto_init(client: &mut Client, cfg: &Config, verbosity: Verbosity) -> Result<State> {
+async fn auto_init(client: &mut Client, cfg: &Config) -> Result<State> {
     let mut state = State::empty();
     let remote_files = client
         .list_recursive(&format!("/{}", cfg.server_dir))
@@ -225,11 +197,7 @@ async fn auto_init(client: &mut Client, cfg: &Config, verbosity: Verbosity) -> R
             continue;
         }
         let remote = cfg.remote_path(&rel);
-        log(
-            verbosity,
-            Verbosity::Verbose,
-            &format!("HASH (remote) {rel}"),
-        );
+        log(Verbosity::Verbose, &format!("HASH (remote) {rel}"));
         let bytes = client.download(&remote).await?;
         let hash = hasher::hash_bytes(&bytes);
         state.set(&rel, hash, bytes.len() as u64);
@@ -248,7 +216,6 @@ async fn execute_uploads(
     files: &[LocalFile],
     local_hashes: &HashMap<String, (String, u64)>,
     state: Arc<Mutex<State>>,
-    verbosity: Verbosity,
 ) -> Result<()> {
     if files.is_empty() {
         return Ok(());
@@ -283,11 +250,7 @@ async fn execute_uploads(
                 .map_err(|e| FtpSyncError::Config(format!("join error: {e}")))??;
 
                 let remote = cfg.remote_path(&file.rel_path);
-                log(
-                    verbosity,
-                    Verbosity::Normal,
-                    &format!("UPLOAD {}", file.rel_path),
-                );
+                log(Verbosity::Normal, &format!("UPLOAD {}", file.rel_path));
                 client.upload_atomic(&remote, &data).await?;
 
                 if let Some((hash, size)) = hashes.get(&file.rel_path) {
@@ -305,22 +268,6 @@ async fn execute_uploads(
             .map_err(|e| FtpSyncError::Config(format!("worker join error: {e}")))??;
     }
     Ok(())
-}
-
-/// Print `msg` if the current verbosity is at least `level`.
-fn log(current: Verbosity, level: Verbosity, msg: &str) {
-    let rank = |v: Verbosity| match v {
-        Verbosity::Quiet => 0,
-        Verbosity::Normal => 1,
-        Verbosity::Verbose => 2,
-    };
-    // Quiet suppresses everything except errors (handled by `?`).
-    if current == Verbosity::Quiet {
-        return;
-    }
-    if rank(current) >= rank(level) {
-        eprintln!("{msg}");
-    }
 }
 
 #[cfg(test)]
