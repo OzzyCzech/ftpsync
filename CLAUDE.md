@@ -88,10 +88,11 @@ entry — and a global lock serializes them. The container is removed at the
 start of the next run, since Rust runs no teardown after the last test.
 
 Two constraints come from the server image, not from ftpsync: uploads run at
-`--concurrency 2`, and `with_server` retries a test once if the container
-dies. That image's vsftpd intermittently segfaults (exit 139) under ordinary
-deploy traffic, identically with pre-suppaftp-10 builds. A failure with the
-server still alive is real and propagates immediately.
+`--concurrency 2`, and `with_server` retries an attempt (claiming the scope
+included) up to 3× when the container dies. That image's vsftpd intermittently
+segfaults (exit 139) under ordinary deploy traffic on both amd64 CI and arm64
+laptops, identically with pre-suppaftp-10 builds. A failure with the server
+still alive is real and propagates immediately.
 
 ## Distribution
 

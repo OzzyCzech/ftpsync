@@ -70,7 +70,6 @@ fn ensure_container() -> bool {
 
     let out = docker(&[
         "run",
-        "--rm",
         "-d",
         "--name",
         CONTAINER,
@@ -158,31 +157,48 @@ fn scope(name: &str) -> Option<Scope> {
     Some(scope)
 }
 
+/// How the shared container ended, for the retry notice.
+fn container_exit() -> String {
+    let out = docker(&["inspect", "-f", "exit={{.State.ExitCode}}", CONTAINER]);
+    if out.status.success() {
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    } else {
+        "gone".to_string()
+    }
+}
+
 /// Run a test body against its own scope on the shared server.
 ///
-/// The image's vsftpd occasionally segfaults (exit 139) under ordinary deploy
-/// traffic — recursive LIST/DELE, or several workers logging in at once. The
-/// crash reproduces identically with pre-suppaftp-10 builds of ftpsync, so it
-/// is a fragility of the server rather than of this client. When the container
-/// dies mid-test the body is retried once on a fresh one; a failure with the
-/// server still alive is a real one and propagates immediately.
+/// The image's vsftpd intermittently segfaults (exit 139) under ordinary
+/// deploy traffic — recursive LIST/DELE, or several workers logging in at
+/// once — on both amd64 CI and arm64 laptops. The crash reproduces identically
+/// with pre-suppaftp-10 builds of ftpsync, so it is a fragility of the server
+/// rather than of this client. When the container dies the whole attempt
+/// (claiming the scope included, since that talks to the container too) is
+/// retried on a fresh one. A failure with the server still alive is a real one
+/// and propagates immediately.
 pub fn with_server(name: &str, body: impl Fn(&Scope) + std::panic::RefUnwindSafe) {
-    let Some(first) = scope(name) else {
-        return;
-    };
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&first)));
-    let Err(panic) = outcome else {
-        return;
-    };
-    if container_running() {
-        std::panic::resume_unwind(panic);
+    const ATTEMPTS: u32 = 3;
+    for attempt in 1..=ATTEMPTS {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // `None` means Docker is unavailable and the test skips.
+            if let Some(scope) = scope(name) {
+                body(&scope);
+            }
+        }));
+        let Err(panic) = outcome else {
+            return;
+        };
+        if container_running() || attempt == ATTEMPTS {
+            std::panic::resume_unwind(panic);
+        }
+        eprintln!(
+            "NOTE: the FTP server died ({}); retrying `{name}` on a fresh container \
+             (attempt {}/{ATTEMPTS})",
+            container_exit(),
+            attempt + 1
+        );
     }
-    drop(first);
-    eprintln!("NOTE: the FTP server died mid-test; retrying `{name}` on a fresh container");
-    let Some(retry) = scope(name) else {
-        return;
-    };
-    body(&retry);
 }
 
 impl Scope {
