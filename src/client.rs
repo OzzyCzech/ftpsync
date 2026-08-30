@@ -240,7 +240,13 @@ impl Client {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
             let target = if abs_dir.is_empty() { "/" } else { abs_dir };
-            let entries = self.inner.list(Some(target)).await?;
+            // A missing directory just contributes nothing — deploying into a
+            // --server-dir that does not exist yet is a normal first run.
+            let entries = match self.inner.list(Some(target)).await {
+                Ok(e) => e,
+                Err(e) if is_not_found(&e) => return Ok(()),
+                Err(e) => return Err(e.into()),
+            };
             for line in entries {
                 if let Some((name, is_dir)) = parse_list_line(&line) {
                     if name == "." || name == ".." {

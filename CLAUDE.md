@@ -87,12 +87,16 @@ dying proxy). Each test takes a `Scope` — its own remote directory, wiped on
 entry — and a global lock serializes them. The container is removed at the
 start of the next run, since Rust runs no teardown after the last test.
 
-Two constraints come from the server image, not from ftpsync: uploads run at
-`--concurrency 2`, and `with_server` retries an attempt (claiming the scope
-included) up to 3× when the container dies. That image's vsftpd intermittently
-segfaults (exit 139) under ordinary deploy traffic on both amd64 CI and arm64
-laptops, identically with pre-suppaftp-10 builds. A failure with the server
-still alive is real and propagates immediately.
+The server is a pinned **pyftpdlib** on `python:3-alpine`, installed when the
+container starts. The vsftpd-based images were tried first and abandoned: they
+segfault (exit 139) under ordinary deploy traffic on both amd64 CI and arm64
+laptops — reproducibly so for some scenarios — and the same crash happens with
+pre-suppaftp-10 builds, so it is the server, not the client. pyftpdlib is
+single-process and takes the whole suite at ftpsync's default concurrency.
+
+`with_server` still retries an attempt up to 3× if the container dies. A
+failure with the server still alive is real and propagates immediately, so the
+retry cannot paper over a regression.
 
 ## Distribution
 

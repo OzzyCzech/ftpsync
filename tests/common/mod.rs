@@ -19,9 +19,13 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Multi-arch vsftpd image, so this runs natively on both amd64 CI and arm64
-/// laptops.
-const IMAGE: &str = "garethflowers/ftp-server:latest";
+// A pinned pyftpdlib on the official Python image, rather than one of the
+// vsftpd images: those segfault (exit 139) under ordinary deploy traffic on
+// both amd64 CI and arm64 laptops — reproducibly so for some scenarios — which
+// made the suite unusable. pyftpdlib is single-process and has taken every
+// scenario at full concurrency without a wobble.
+const IMAGE: &str = "python:3-alpine";
+const PYFTPDLIB: &str = "2.2.0";
 const CONTAINER: &str = "ftpsync-integration-test";
 const USER: &str = "tester";
 const PASS: &str = "s3cret";
@@ -30,8 +34,8 @@ const CONTROL_PORT: u16 = 2121;
 // is baked into the image's vsftpd.conf.
 const PASV_MIN: u16 = 40000;
 const PASV_MAX: u16 = 40009;
-/// The FTP user's (chrooted) home inside the container.
-const REMOTE_ROOT: &str = "/home/tester";
+/// The directory the FTP server serves.
+const REMOTE_ROOT: &str = "/srv";
 
 fn docker(args: &[&str]) -> Output {
     Command::new("docker")
@@ -68,6 +72,13 @@ fn ensure_container() -> bool {
     docker(&["rm", "-f", CONTAINER]);
     await_ports_released();
 
+    let serve = format!(
+        "pip install --no-cache-dir --quiet pyftpdlib=={PYFTPDLIB} \
+         && mkdir -p {REMOTE_ROOT} \
+         && exec python -m pyftpdlib --interface 0.0.0.0 --port 21 --write \
+            --directory {REMOTE_ROOT} --username {USER} --password {PASS} \
+            --range {PASV_MIN}-{PASV_MAX}"
+    );
     let out = docker(&[
         "run",
         "-d",
@@ -77,11 +88,10 @@ fn ensure_container() -> bool {
         &format!("{CONTROL_PORT}:21"),
         "-p",
         &format!("{PASV_MIN}-{PASV_MAX}:{PASV_MIN}-{PASV_MAX}"),
-        "-e",
-        &format!("FTP_USER={USER}"),
-        "-e",
-        &format!("FTP_PASS={PASS}"),
         IMAGE,
+        "sh",
+        "-c",
+        &serve,
     ]);
     assert!(
         out.status.success(),
@@ -117,7 +127,8 @@ fn await_ports_released() {
 /// healthcheck keeps this independent of how the image is built.
 fn await_banner() {
     let addr: SocketAddr = ([127, 0, 0, 1], CONTROL_PORT).into();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // Generous: the container installs pyftpdlib on startup.
+    let deadline = Instant::now() + Duration::from_secs(180);
     while Instant::now() < deadline {
         if let Ok(mut sock) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
             sock.set_read_timeout(Some(Duration::from_secs(1))).ok();
@@ -128,7 +139,7 @@ fn await_banner() {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    panic!("FTP server did not answer on port {CONTROL_PORT} within 60s");
+    panic!("FTP server did not answer on port {CONTROL_PORT} within 180s");
 }
 
 fn test_lock() -> MutexGuard<'static, ()> {
@@ -169,14 +180,10 @@ fn container_exit() -> String {
 
 /// Run a test body against its own scope on the shared server.
 ///
-/// The image's vsftpd intermittently segfaults (exit 139) under ordinary
-/// deploy traffic — recursive LIST/DELE, or several workers logging in at
-/// once — on both amd64 CI and arm64 laptops. The crash reproduces identically
-/// with pre-suppaftp-10 builds of ftpsync, so it is a fragility of the server
-/// rather than of this client. When the container dies the whole attempt
-/// (claiming the scope included, since that talks to the container too) is
-/// retried on a fresh one. A failure with the server still alive is a real one
-/// and propagates immediately.
+/// If the container dies the whole attempt is retried on a fresh one — the
+/// scope claim included, since that talks to the container too. A failure with
+/// the server still alive is a real one and propagates immediately, so this
+/// cannot paper over an actual regression.
 pub fn with_server(name: &str, body: impl Fn(&Scope) + std::panic::RefUnwindSafe) {
     const ATTEMPTS: u32 = 3;
     for attempt in 1..=ATTEMPTS {
@@ -215,9 +222,7 @@ impl Scope {
     /// Start from an empty directory the FTP user owns.
     fn reset(&self) {
         let root = self.abs("");
-        let out = self.sh(&format!(
-            "rm -rf {root} && mkdir -p {root} && chown -R {USER}:{USER} {root}"
-        ));
+        let out = self.sh(&format!("rm -rf {root} && mkdir -p {root}"));
         assert!(
             out.status.success(),
             "could not reset scope {}:\n{}",
@@ -305,28 +310,12 @@ impl Scope {
             .expect("failed to write seeded content");
         let out = child.wait_with_output().expect("docker exec failed");
         assert!(out.status.success(), "could not seed {rel}");
-
-        // The FTP user must be able to overwrite what we planted as root.
-        let root = self.abs("");
-        assert!(self
-            .sh(&format!("chown -R {USER}:{USER} {root}"))
-            .status
-            .success());
     }
 
     /// An `ftpsync` invocation deploying `local_dir` into this scope.
     pub fn ftpsync(&self, local_dir: &Path) -> Command {
         self.ftpsync_at(local_dir, "")
     }
-
-    /// Upload concurrency used by the tests.
-    ///
-    /// Two workers plus the control connection still cover the parallel upload
-    /// path, but the image's vsftpd segfaults (exit 139) when ftpsync's default
-    /// of four workers logs in at once — and takes the rest of the suite with
-    /// it. That crash reproduces identically with pre-suppaftp-10 builds, so it
-    /// is a fragility of this server, not of the client.
-    const CONCURRENCY: &'static str = "2";
 
     /// As [`Scope::ftpsync`], but targeting `subdir` below the scope root.
     pub fn ftpsync_at(&self, local_dir: &Path, subdir: &str) -> Command {
@@ -341,7 +330,6 @@ impl Scope {
             .args(["--username", USER])
             .args(["--password", PASS])
             .args(["--secure", "none"])
-            .args(["--concurrency", Self::CONCURRENCY])
             .args(["--server-dir", &server_dir])
             .arg("--local-dir")
             .arg(local_dir)
