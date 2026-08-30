@@ -3,14 +3,14 @@
 use crate::cli::SecureMode;
 use crate::config::Config;
 use crate::error::{is_not_found, FtpSyncError, Result};
-use futures::io::Cursor;
 use std::collections::HashSet;
+use std::io::Cursor;
 use std::sync::Arc;
 
-use futures_rustls::rustls::{ClientConfig, RootCertStore};
-use futures_rustls::TlsConnector;
+use suppaftp::tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream, ImplAsyncFtpStream};
+use suppaftp::tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use suppaftp::tokio_rustls::TlsConnector;
 use suppaftp::types::FileType;
-use suppaftp::{AsyncRustlsConnector, AsyncRustlsFtpStream, ImplAsyncFtpStream};
 
 /// Wrapper around an async FTP(S) stream with the helpers ftpsync needs.
 pub struct Client {
@@ -127,7 +127,7 @@ impl Client {
     }
 
     async fn download_once(&mut self, path: &str) -> Result<Vec<u8>> {
-        use futures::AsyncReadExt;
+        use tokio::io::AsyncReadExt;
         let mut stream = match self.inner.retr_as_stream(path).await {
             Ok(s) => s,
             Err(e) if is_not_found(&e) => return Err(FtpSyncError::NotFound(path.to_string())),
@@ -354,11 +354,11 @@ fn parse_list_line(line: &str) -> Option<(String, bool)> {
 }
 
 mod danger {
-    use futures_rustls::rustls::client::danger::{
+    use suppaftp::tokio_rustls::rustls::client::danger::{
         HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
     };
-    use futures_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-    use futures_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme};
+    use suppaftp::tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use suppaftp::tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme};
 
     /// A certificate verifier that accepts everything (for self-signed certs).
     #[derive(Debug)]
