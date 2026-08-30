@@ -31,6 +31,21 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+  integration:
+    name: Integration (docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Deploys against a real FTP server in a container; `#[ignore]`d in the
+      # normal test run because the other matrix legs have no Linux Docker.
+      - name: Integration tests
+        run: cargo test --locked --test deploy -- --ignored
+      - name: Remove the test container
+        if: always()
+        run: docker rm -f ftpsync-integration-test || true
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

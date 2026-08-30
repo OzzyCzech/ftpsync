@@ -203,10 +203,13 @@ async fn auto_init(client: &mut Client, cfg: &Config) -> Result<State> {
         state.set(&rel, hash, bytes.len() as u64);
     }
     // Persist the freshly-built state so subsequent runs skip auto-init.
-    let bytes = state.render_json()?;
-    client
-        .upload(&cfg.remote_path(&cfg.state_file), &bytes)
-        .await?;
+    // A dry run reports only, so it must not leave the file behind.
+    if !cfg.dry_run {
+        let bytes = state.render_json()?;
+        client
+            .upload(&cfg.remote_path(&cfg.state_file), &bytes)
+            .await?;
+    }
     Ok(state)
 }
 

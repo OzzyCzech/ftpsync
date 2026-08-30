@@ -67,7 +67,31 @@ cargo clippy --all-targets
 cargo fmt
 ```
 
-CI (`.github/workflows/ci.yml`) must stay green: clippy + fmt + tests.
+CI (`.github/workflows/ci.yml`) must stay green: clippy + fmt + tests +
+the integration job.
+
+### Integration tests (`tests/deploy.rs`)
+
+End-to-end deploys against a real FTP server in Docker — the only coverage of
+`client.rs` and `sync::run`, which the unit tests cannot reach. They are
+`#[ignore]`d so `cargo test` stays hermetic:
+
+```bash
+cargo test --test deploy -- --ignored     # needs docker; skips without it
+docker rm -f ftpsync-integration-test     # drop the leftover server
+```
+
+`tests/common/mod.rs` runs **one** container for the whole binary (per-test
+containers churn Docker's published ports and connections then land on a
+dying proxy). Each test takes a `Scope` — its own remote directory, wiped on
+entry — and a global lock serializes them. The container is removed at the
+start of the next run, since Rust runs no teardown after the last test.
+
+Two constraints come from the server image, not from ftpsync: uploads run at
+`--concurrency 2`, and `with_server` retries a test once if the container
+dies. That image's vsftpd intermittently segfaults (exit 139) under ordinary
+deploy traffic, identically with pre-suppaftp-10 builds. A failure with the
+server still alive is real and propagates immediately.
 
 ## Distribution
 
