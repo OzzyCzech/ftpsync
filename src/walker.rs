@@ -58,7 +58,8 @@ pub fn discover(cfg: &Config) -> Result<Vec<LocalFile>> {
     };
 
     let mut out = Vec::new();
-    for entry in WalkDir::new(&cfg.local_dir).follow_links(false) {
+    let mut walk = WalkDir::new(&cfg.local_dir).follow_links(false).into_iter();
+    while let Some(entry) = walk.next() {
         let entry = entry.map_err(|e| FtpSyncError::Io(std::io::Error::other(e.to_string())))?;
 
         let abs_path = entry.path();
@@ -71,6 +72,15 @@ pub fn discover(cfg: &Config) -> Result<Vec<LocalFile>> {
         // Honor .ftpignore for both dirs and files.
         if let Some(rules) = &ignore_rules {
             if rules.is_ignored(&rel, is_dir) {
+                // An ignored directory must be pruned, not merely skipped:
+                // gitignore matching tests one path at a time, so `node_modules/`
+                // matches the directory but nothing under it. Without pruning the
+                // walk descends anyway and every child sails through unmatched.
+                // Pruning also mirrors git, where a file inside an excluded
+                // directory cannot be re-included by a later negation.
+                if is_dir {
+                    walk.skip_current_dir();
+                }
                 continue;
             }
         }
@@ -157,6 +167,46 @@ mod tests {
         let matches = Args::command().get_matches_from(argv);
         let args = Args::from_arg_matches(&matches).unwrap();
         Config::build(args, crate::config_file::FileConfig::default(), &matches).unwrap()
+    }
+
+    /// Regression: an ignored directory has to be pruned from the walk.
+    ///
+    /// Gitignore matching tests a single path, so `node_modules/` matches the
+    /// directory and nothing beneath it. Before the fix the walk skipped the
+    /// directory entry and then happily descended into it, uploading every
+    /// child — for this project that meant `.git/` and `.claude/` heading to a
+    /// public web root.
+    #[test]
+    fn ignored_directories_are_pruned_not_just_skipped() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("ftpsync-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("node_modules/deep/deeper")).unwrap();
+        fs::create_dir_all(dir.join(".git/objects")).unwrap();
+        fs::create_dir_all(dir.join("public")).unwrap();
+        fs::write(dir.join(".ftpignore"), b"node_modules/\n.git*\n").unwrap();
+        fs::write(dir.join("index.php"), b"x").unwrap();
+        fs::write(dir.join("public/app.js"), b"x").unwrap();
+        fs::write(dir.join("node_modules/pkg.json"), b"x").unwrap();
+        fs::write(dir.join("node_modules/deep/deeper/buried.js"), b"x").unwrap();
+        fs::write(dir.join(".git/objects/abc"), b"x").unwrap();
+
+        let cfg = cfg_for(&dir);
+        let names: Vec<String> = discover(&cfg)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.rel_path)
+            .collect();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            names,
+            vec![
+                ".ftpignore".to_string(),
+                "index.php".to_string(),
+                "public/app.js".to_string(),
+            ]
+        );
     }
 
     #[test]
