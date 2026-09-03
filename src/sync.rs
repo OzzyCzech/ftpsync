@@ -121,6 +121,12 @@ pub async fn run(cfg: Config) -> Result<()> {
 }
 
 /// Run the mutating phase: deletes, parallel uploads, purge, and state commit.
+///
+/// The state file is committed even when the transfers fail. It has to describe
+/// what is actually on the server, not just the outcome of a fully successful
+/// run: otherwise a deploy that moved most of its queue before dropping records
+/// nothing, the next run re-uploads the very same files, and on an unreliable
+/// link the deploy never converges (see issue #5).
 async fn deploy_mutations(
     client: &mut Client,
     cfg: &Config,
@@ -129,33 +135,65 @@ async fn deploy_mutations(
     mut state: State,
     state_path: &str,
 ) -> Result<()> {
-    // Deletes on the primary connection.
+    // Deletes on the primary connection. Stop at the first failure but keep the
+    // error, so the deletes that did happen still make it into the state file.
+    let mut outcome: Result<()> = Ok(());
     for path in &plan.to_delete {
         let remote = cfg.remote_path(path);
         log(Verbosity::Verbose, &format!("DELETE {path}"));
-        client.delete(&remote).await?;
-        state.remove(path);
+        match client.delete(&remote).await {
+            Ok(()) => state.remove(path),
+            Err(e) => {
+                outcome = Err(e);
+                break;
+            }
+        }
     }
 
     // Uploads (parallel via connection pool).
     let state = Arc::new(Mutex::new(state));
-    execute_uploads(cfg, &plan.to_upload, local_hashes, Arc::clone(&state)).await?;
+    if outcome.is_ok() {
+        outcome = execute_uploads(cfg, &plan.to_upload, local_hashes, Arc::clone(&state)).await;
+    }
     let mut state = Arc::try_unwrap(state)
         .map_err(|_| FtpSyncError::Config("internal: state still shared".into()))?
         .into_inner();
 
-    // Purge requested directories (e.g. caches) after the sync.
-    for dir in &cfg.purge {
-        let remote = cfg.remote_path(dir);
-        log(Verbosity::Normal, &format!("Purging {dir}"));
-        client.purge(&remote).await?;
+    // Purge requested directories (e.g. caches) after the sync. Skipped on
+    // failure: emptying a cache dir for a deploy that only half landed would
+    // just add a cold cache to the problem.
+    if outcome.is_ok() {
+        for dir in &cfg.purge {
+            let remote = cfg.remote_path(dir);
+            log(Verbosity::Normal, &format!("Purging {dir}"));
+            if let Err(e) = client.purge(&remote).await {
+                outcome = Err(e);
+                break;
+            }
+        }
     }
 
-    // Commit state.
+    let commit = commit_state(client, &mut state, state_path).await;
+    if commit.is_ok() {
+        log(
+            Verbosity::Normal,
+            if outcome.is_ok() {
+                "State committed"
+            } else {
+                "State committed — records what landed before the failure; \
+                 re-run to finish the rest"
+            },
+        );
+    }
+
+    // Prefer the transfer error over a commit error: the transfer failure is
+    // the cause, a failed commit merely its aftermath.
+    outcome.and(commit)
+}
+
+async fn commit_state(client: &mut Client, state: &mut State, state_path: &str) -> Result<()> {
     let bytes = state.render_json()?;
-    client.upload(state_path, &bytes).await?;
-    log(Verbosity::Normal, "State committed");
-    Ok(())
+    client.upload(state_path, &bytes).await
 }
 
 /// Compute the upload/delete plan.
@@ -266,11 +304,23 @@ async fn execute_uploads(
         }));
     }
 
+    // Await every worker, even after one fails. They are detached tokio tasks:
+    // returning early would leave the rest uploading and mutating the shared
+    // state while the caller serializes it, committing a state file that does
+    // not match the server. The first error is the one reported.
+    let mut first_err = None;
     for w in workers {
-        w.await
-            .map_err(|e| FtpSyncError::Config(format!("worker join error: {e}")))??;
+        let res = w
+            .await
+            .unwrap_or_else(|e| Err(FtpSyncError::Config(format!("worker join error: {e}"))));
+        if let Err(e) = res {
+            first_err = first_err.or(Some(e));
+        }
     }
-    Ok(())
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

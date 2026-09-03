@@ -283,8 +283,13 @@ state:
 4. **Auto-init** if no state exists: list + download + hash remote files.
 5. **Diff** local hashes against the state → uploads (changed/new) and deletes
    (present in state, missing locally).
-6. **Execute** uploads in parallel (atomic temp + rename) and deletes.
-7. **Commit** the refreshed state file back to the server.
+6. **Execute** uploads in parallel (atomic temp + rename) and deletes. A transfer
+   that fails transiently — a 4xx reply or a dropped connection, which shared
+   hosting hands out freely under sustained load — is retried on a fresh
+   connection with backoff.
+7. **Commit** the refreshed state file back to the server. This happens **even
+   when the run fails**, so the state always describes what is actually deployed
+   and a re-run only picks up the files that didn't make it.
 
 ## Use in CI/CD
 

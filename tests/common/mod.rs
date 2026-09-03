@@ -312,6 +312,16 @@ impl Scope {
         assert!(out.status.success(), "could not seed {rel}");
     }
 
+    /// Plant a remote directory, e.g. to occupy a path an upload wants.
+    pub fn seed_dir(&self, rel: &str) {
+        assert!(
+            self.sh(&format!("mkdir -p {}", self.abs(rel)))
+                .status
+                .success(),
+            "could not seed directory {rel}"
+        );
+    }
+
     /// An `ftpsync` invocation deploying `local_dir` into this scope.
     pub fn ftpsync(&self, local_dir: &Path) -> Command {
         self.ftpsync_at(local_dir, "")
@@ -347,6 +357,21 @@ pub fn run(cmd: &mut Command) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(out.status.success(), "ftpsync failed:\n{combined}");
+    combined
+}
+
+/// Run `ftpsync` and return its combined output, asserting it *failed*.
+pub fn run_failing(cmd: &mut Command) -> String {
+    let out = cmd.output().expect("failed to execute ftpsync");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "ftpsync was expected to fail but succeeded:\n{combined}"
+    );
     combined
 }
 

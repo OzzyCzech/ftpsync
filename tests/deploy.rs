@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{binary_blob, run, with_server, LocalTree};
+use common::{binary_blob, run, run_failing, with_server, LocalTree};
 
 const STATE: &str = ".ftpsync-state.json";
 
@@ -250,5 +250,59 @@ fn deploys_into_a_server_subdirectory() {
         // The state file is scoped to --server-dir too.
         assert!(server.exists(&format!("public/{STATE}")));
         assert!(!server.exists(STATE));
+    });
+}
+
+/// A deploy that dies part-way through must still record what it managed to
+/// upload, otherwise the next run repeats the whole queue and a deploy over an
+/// unreliable link never converges (issue #5).
+///
+/// The abort is provoked with a remote directory sitting on a path an upload
+/// wants, which fails the rename the same way a dropped link fails a transfer,
+/// but deterministically: `walker::discover` sorts ascending and the upload
+/// workers pop from the back, so at `--concurrency 1` the files go out in
+/// reverse alphabetical order and `00-blocked.html` is reached last.
+#[test]
+#[ignore = "requires docker"]
+fn failed_deploy_still_commits_what_landed() {
+    with_server("failed_deploy_still_commits_what_landed", |server| {
+        let tree = LocalTree::new("partial");
+        for i in 0..6 {
+            tree.write(&format!("page{i}.html"), format!("page {i}\n").as_bytes());
+        }
+        tree.write("00-blocked.html", b"never lands\n");
+        server.seed_dir("00-blocked.html");
+
+        let output = run_failing(server.ftpsync(tree.path()).args(["--concurrency", "1"]));
+        assert!(
+            output.contains("State committed"),
+            "the failed run committed no state:\n{output}"
+        );
+
+        // The six pages landed and are recorded; the blocked one is not.
+        let state = server.read(STATE);
+        for i in 0..6 {
+            let page = format!("page{i}.html");
+            assert_eq!(server.read(&page), format!("page {i}\n"));
+            assert!(
+                state.contains(&format!("\"{page}\"")),
+                "missing {page}: {state}"
+            );
+        }
+        assert!(
+            !state.contains("00-blocked.html"),
+            "state claims a file that never uploaded: {state}"
+        );
+
+        // The advisory marker is released even though the deploy failed.
+        assert!(!server.exists(&format!("{STATE}.running")));
+
+        // The point of it all: the next run retries only the leftover instead
+        // of starting the whole queue over.
+        let second = run_failing(&mut server.ftpsync(tree.path()));
+        assert!(
+            second.contains("1 to upload, 0 to delete"),
+            "the deploy did not converge:\n{second}"
+        );
     });
 }

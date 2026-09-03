@@ -1,8 +1,9 @@
 //! FTPS client wrapper around suppaftp (async, rustls).
 
 use crate::cli::SecureMode;
-use crate::config::Config;
-use crate::error::{is_not_found, FtpSyncError, Result};
+use crate::config::{Config, Verbosity};
+use crate::error::{is_not_found, is_transient, FtpSyncError, Result};
+use crate::log::log;
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -11,6 +12,23 @@ use suppaftp::tokio::{AsyncRustlsConnector, AsyncRustlsFtpStream, ImplAsyncFtpSt
 use suppaftp::tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use suppaftp::tokio_rustls::TlsConnector;
 use suppaftp::types::FileType;
+
+/// How many times a single transfer is attempted before giving up.
+const TRANSFER_ATTEMPTS: u32 = 6;
+
+/// Exponential backoff before retry `attempt` (1-based): 150ms, 300ms, … 2.4s.
+fn backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_millis(150 << (attempt - 1))
+}
+
+/// Which upload strategy [`Client::upload_retrying`] should run.
+#[derive(Copy, Clone)]
+enum UploadMode {
+    /// Write straight onto the target path.
+    Direct,
+    /// Write to a tmp path, then rename onto the target.
+    Atomic,
+}
 
 /// Wrapper around an async FTP(S) stream with the helpers ftpsync needs.
 pub struct Client {
@@ -106,10 +124,9 @@ impl Client {
         };
 
         let mut last = 0usize;
-        for attempt in 0..6 {
+        for attempt in 0..TRANSFER_ATTEMPTS {
             if attempt > 0 {
-                let backoff = std::time::Duration::from_millis(150 << (attempt - 1));
-                tokio::time::sleep(backoff).await;
+                tokio::time::sleep(backoff(attempt)).await;
                 self.reconnect().await?;
             }
             let buf = self.download_once(path).await?;
@@ -139,7 +156,52 @@ impl Client {
     }
 
     /// Upload bytes to a remote path, creating parent directories as needed.
+    ///
+    /// Retries transient failures — see [`Self::upload_retrying`].
     pub async fn upload(&mut self, path: &str, data: &[u8]) -> Result<()> {
+        self.upload_retrying(path, data, UploadMode::Direct).await
+    }
+
+    /// Atomic upload: write to `{path}.ftpsync-tmp`, then rename onto `path`.
+    ///
+    /// Retries transient failures — see [`Self::upload_retrying`].
+    pub async fn upload_atomic(&mut self, path: &str, data: &[u8]) -> Result<()> {
+        self.upload_retrying(path, data, UploadMode::Atomic).await
+    }
+
+    /// Run an upload, retrying transient failures with backoff + reconnect.
+    ///
+    /// Mirrors [`Self::download`]: shared hosting drops data connections under
+    /// sustained transfer volume (`450 Transfer aborted`), and the same file
+    /// usually goes through on a fresh connection. Permanent failures (5xx —
+    /// no permission, quota, bad path) return immediately; retrying those would
+    /// only stretch the deploy out by the whole backoff budget.
+    ///
+    /// Uploads are idempotent, so a retry cannot corrupt the target: the direct
+    /// mode overwrites, the atomic mode re-writes its tmp file and renames.
+    async fn upload_retrying(&mut self, path: &str, data: &[u8], mode: UploadMode) -> Result<()> {
+        let mut attempt = 0u32;
+        loop {
+            let res = match mode {
+                UploadMode::Direct => self.upload_once(path, data).await,
+                UploadMode::Atomic => self.upload_atomic_once(path, data).await,
+            };
+            let Err(err) = res else { return Ok(()) };
+
+            attempt += 1;
+            if attempt >= TRANSFER_ATTEMPTS || !is_transient(&err) {
+                return Err(err);
+            }
+            log(
+                Verbosity::Verbose,
+                &format!("RETRY {path} (attempt {}): {err}", attempt + 1),
+            );
+            tokio::time::sleep(backoff(attempt)).await;
+            self.reconnect().await?;
+        }
+    }
+
+    async fn upload_once(&mut self, path: &str, data: &[u8]) -> Result<()> {
         self.ensure_parent_dirs(path).await?;
         let mut reader = Cursor::new(data);
         self.inner.put_file(path, &mut reader).await?;
@@ -147,8 +209,7 @@ impl Client {
         Ok(())
     }
 
-    /// Atomic upload: write to `{path}.ftpsync-tmp`, then rename onto `path`.
-    pub async fn upload_atomic(&mut self, path: &str, data: &[u8]) -> Result<()> {
+    async fn upload_atomic_once(&mut self, path: &str, data: &[u8]) -> Result<()> {
         let tmp = format!("{path}.ftpsync-tmp");
         self.ensure_parent_dirs(path).await?;
         {

@@ -20,7 +20,21 @@ content hash changed since the last deploy.
    optionally `--purge` cache dirs, and finally commit the new state file.
 
 The state file is the source of truth, so deploys are content-addressed and
-idempotent: an interrupted run re-uploads only what didn't make it.
+idempotent: an interrupted run re-uploads only what didn't make it. Two things
+hold that up, and both are load-bearing (see issue #5):
+
+- **The state is committed even when the run fails** (`deploy_mutations`). It has
+  to describe the server, not just a clean run — otherwise a deploy that moved
+  most of its queue before dropping records nothing, the next run repeats the
+  whole queue, and over an unreliable link the deploy never converges. Purge is
+  the one step skipped on failure.
+- **Transient transfer failures are retried** on a fresh connection with backoff
+  (`upload_retrying` / `download`, classified by `error::is_transient`: 4xx and
+  connection errors retry, 5xx does not).
+
+`execute_uploads` therefore has to await **every** worker before returning, even
+after one fails: they are detached tokio tasks that keep mutating the shared
+state, so bailing early would serialize a state file that doesn't match reality.
 
 ## Module map (`src/`)
 
