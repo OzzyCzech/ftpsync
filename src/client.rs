@@ -78,16 +78,15 @@ impl Client {
         stream.login(&cfg.username, &cfg.password).await?;
         stream.transfer_type(FileType::Binary).await?;
 
-        if cfg.passive {
-            stream.set_mode(suppaftp::Mode::Passive);
-            // Ignore the IP the server advertises in its PASV reply and connect
-            // the data channel to the control host instead. Misconfigured or
-            // NATed servers (e.g. advertising 0.0.0.0 or a private address)
-            // otherwise yield failed/empty data transfers.
-            stream.set_passive_nat_workaround(true);
-        } else {
-            stream.set_mode(suppaftp::Mode::Active);
-        }
+        let peer = stream.get_ref().peer_addr().ok();
+        stream.set_mode(data_mode(cfg.passive, peer));
+
+        // Ignore the IP the server advertises in its PASV reply and connect the
+        // data channel to the control host instead. Misconfigured or NATed
+        // servers (e.g. advertising 0.0.0.0 or a private address) otherwise
+        // yield failed/empty data transfers. EPSV replies carry only a port and
+        // already reuse the control host, so the flag is a no-op there.
+        stream.set_passive_nat_workaround(cfg.passive);
 
         Ok(stream)
     }
@@ -302,6 +301,30 @@ impl Client {
     }
 }
 
+/// Data-channel mode for a control connection to `peer`.
+///
+/// PASV encodes the data address as four IPv4 octets, so it cannot express an
+/// IPv6 one (RFC 2428 §3). Servers reached over IPv6 answer anyway, with a
+/// degenerate tuple — Websupport replies `227 Entering Passive Mode (5,170,245).`
+/// for the host `2a00:4b40:aaaa:2011::5`: the address' last byte plus the port,
+/// three numbers where six are required. No client can parse that.
+///
+/// EPSV replies with the port alone and reuses the control host, which works on
+/// both families. IPv4 stays on PASV: it is what ancient servers understand, and
+/// this is the path that has always worked.
+///
+/// An unknown peer (`peer_addr()` failed) keeps the IPv4 behaviour — losing the
+/// socket address means bigger trouble is coming either way.
+fn data_mode(passive: bool, peer: Option<std::net::SocketAddr>) -> suppaftp::Mode {
+    if !passive {
+        return suppaftp::Mode::Active;
+    }
+    match peer {
+        Some(addr) if addr.is_ipv6() => suppaftp::Mode::ExtendedPassive,
+        _ => suppaftp::Mode::Passive,
+    }
+}
+
 /// Build a rustls connector. With `insecure`, certificate verification is disabled.
 fn tls_connector(insecure: bool) -> AsyncRustlsConnector {
     let config = if insecure {
@@ -425,6 +448,45 @@ mod danger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn addr(s: &str) -> Option<std::net::SocketAddr> {
+        Some(s.parse().unwrap())
+    }
+
+    #[test]
+    fn ipv6_control_connection_uses_epsv() {
+        // PASV cannot encode an IPv6 data address; servers answer with a
+        // three-number tuple no client can parse. EPSV carries only a port.
+        assert_eq!(
+            data_mode(true, addr("[2a00:4b40:aaaa:2011::5]:21")),
+            suppaftp::Mode::ExtendedPassive
+        );
+    }
+
+    #[test]
+    fn ipv4_control_connection_stays_on_pasv() {
+        assert_eq!(
+            data_mode(true, addr("37.9.175.213:21")),
+            suppaftp::Mode::Passive
+        );
+    }
+
+    #[test]
+    fn unknown_peer_falls_back_to_pasv() {
+        assert_eq!(data_mode(true, None), suppaftp::Mode::Passive);
+    }
+
+    #[test]
+    fn active_mode_ignores_the_address_family() {
+        assert_eq!(
+            data_mode(false, addr("[2a00:4b40:aaaa:2011::5]:21")),
+            suppaftp::Mode::Active
+        );
+        assert_eq!(
+            data_mode(false, addr("37.9.175.213:21")),
+            suppaftp::Mode::Active
+        );
+    }
 
     #[test]
     fn parse_unix_dir() {

@@ -368,6 +368,10 @@ can only be added to an existing package) — bootstrap it once with a local
 - **Passive NAT workaround** — in passive mode the data channel connects to the
   control host instead of the IP the server advertises in its PASV reply, so
   misconfigured/NATed servers (e.g. advertising `0.0.0.0`) still work.
+- **EPSV over IPv6** — PASV can only encode an IPv4 address (RFC 2428), and
+  servers reached over IPv6 answer it with a tuple no client can parse. When the
+  control connection is IPv6, `ftpsync` uses EPSV instead, which returns just a
+  port. IPv4 keeps using PASV.
 - **Deploy marker** — a `<state-file>.running` marker is written while a deploy
   mutates the server and removed when it finishes, making an interrupted or
   overlapping run visible. It is advisory only: it surfaces concurrent deploys
